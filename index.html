@@ -1,0 +1,2119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Synapse Tactical Command - Live Radar & Camera Grid</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+  <style>
+    *, *:before, *:after { box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+    body, html {
+      margin: 0; padding: 0; width: 100vw; height: 100vh;
+      background: #020408; color: #00ffcc;
+      font-family: 'Courier New', Courier, monospace;
+      overflow: hidden;
+    }
+
+    #app-container { width: 100vw; height: 100vh; position: relative; display: flex; }
+    .map-view { flex: 1; height: 100%; background: #000; }
+    #map2 { display: none; border-left: 2px solid #00ffcc; }
+    .leaflet-container { background: #020408 !important; }
+
+    /* SPINNING RADAR MATRIX OVERLAY ON MAP */
+    .spinning-radar-map-layer {
+      position: absolute; top: 50%; left: 50%;
+      width: 650px; height: 650px; margin-top: -325px; margin-left: -325px;
+      border: 2px dashed rgba(0, 255, 204, 0.45); border-radius: 50%;
+      pointer-events: none; z-index: 400;
+      animation: mapRadarSpin 10s linear infinite;
+      box-shadow: 0 0 60px rgba(0,255,204,0.2);
+    }
+    .spinning-radar-sweep {
+      position: absolute; top: 0; left: 0; width: 325px; height: 325px;
+      border-right: 3px solid rgba(0, 255, 204, 0.9);
+      border-radius: 100% 0 0 0;
+      transform-origin: 100% 100%;
+      animation: radarSweepSpin 3s linear infinite;
+    }
+    @keyframes mapRadarSpin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    @keyframes radarSweepSpin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+    /* TACTICAL OVERLAY GRID */
+    #ui-overlay {
+      position: absolute; top: 0; left: 0;
+      width: 100vw; height: 100vh; z-index: 1000;
+      display: grid;
+      grid-template-rows: 55px 1fr 60px;
+      grid-template-columns: 300px 1fr 300px;
+      pointer-events: none;
+    }
+    #ui-overlay > * { pointer-events: auto; }
+
+    #top-alert-bar {
+      grid-row: 1; grid-column: 1 / -1;
+      background: rgba(127, 29, 29, 0.9); color: #FFF;
+      display: flex; align-items: center; padding: 0 12px; gap: 10px;
+      border-bottom: 2px solid #00ffcc; box-shadow: 0 4px 20px rgba(0,255,204,0.3);
+      cursor: pointer; transition: all 0.3s;
+    }
+    #top-alert-bar.tornado-active {
+      background: rgba(185, 28, 28, 0.95) !important;
+      animation: alertPulse 1s infinite alternate;
+    }
+    @keyframes alertPulse {
+      0% { background: rgba(127, 29, 29, 0.9); box-shadow: 0 0 25px #ff0000; }
+      100% { background: rgba(255, 0, 0, 0.95); box-shadow: 0 0 45px #ff0055; }
+    }
+
+    .top-time-box {
+      display: flex; flex-direction: column; justify-content: center;
+      background: rgba(0,0,0,0.6); padding: 2px 10px; border-radius: 4px;
+      border-right: 1px solid rgba(0,255,204,0.3);
+    }
+    .top-time-box .time-main { font-weight: 900; font-size: 1.1em; color: #00ffcc; }
+    .top-time-box .date-sub { font-size: 0.6em; font-weight: 800; color: #FDE047; text-transform: uppercase; }
+
+    .top-alert-content { flex-grow: 1; display: flex; flex-direction: column; justify-content: center; overflow: hidden; }
+    .top-alert-title { font-weight: 900; font-size: 1.2em; text-transform: uppercase; color: #FFF; text-shadow: 0 0 8px #ff0055; }
+    .top-alert-counties { font-size: 0.72em; font-weight: 800; color: #FEF08A; text-transform: uppercase; }
+
+    .action-btn {
+      background: rgba(0,0,0,0.7); color: #00ffcc; border: 1px solid #00ffcc;
+      border-radius: 4px; padding: 6px 10px; font-size: 0.75em; font-weight: 900;
+      cursor: pointer; transition: all 0.2s;
+    }
+    .action-btn:hover { background: #00ffcc; color: #000; box-shadow: 0 0 10px #00ffcc; }
+
+    /* LEFT SIDE PANEL: DYNAMIC CAMERAS & CONTROLS */
+    #left-panel {
+      grid-row: 2; grid-column: 1;
+      background: rgba(2, 4, 8, 0.95); border-right: 2px solid #00ffcc;
+      padding: 10px; display: flex; flex-direction: column; gap: 8px;
+      backdrop-filter: blur(12px); overflow-y: auto; z-index: 20;
+    }
+
+    .panel-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #00ffcc; padding-bottom: 4px; }
+    .panel-title { font-size: 0.8em; font-weight: 900; color: #00ffcc; letter-spacing: 1px; }
+
+    .scan-btn {
+      background: #00ffcc; color: #000; border: none; border-radius: 3px;
+      padding: 4px 8px; font-size: 0.7em; font-weight: 900; cursor: pointer;
+      box-shadow: 0 0 8px rgba(0,255,204,0.4); transition: all 0.2s;
+    }
+    .scan-btn:hover { background: #fff; box-shadow: 0 0 12px #fff; }
+
+    .cam-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; max-height: 280px; overflow-y: auto; }
+    .cam-box {
+      width: 100%; height: 90px; background: #111;
+      border: 1.5px solid #00ffcc; border-radius: 4px; overflow: hidden; position: relative;
+      cursor: pointer; transition: all 0.2s;
+    }
+    .cam-box:hover { border-color: #ff0055; transform: scale(1.02); box-shadow: 0 0 10px #ff0055; }
+    .cam-box video, .cam-box img { width: 100%; height: 100%; object-fit: cover; }
+    .cam-label {
+      position: absolute; bottom: 0; left: 0; right: 0;
+      background: rgba(0,0,0,0.85); padding: 2px 4px;
+      font-size: 0.52em; font-weight: 900; color: #ffea00;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .cam-refresh-badge {
+      position: absolute; top: 2px; right: 2px; background: rgba(0,0,0,0.75);
+      color: #00ffcc; font-size: 0.5em; font-weight: 900; padding: 1px 4px; border-radius: 3px;
+    }
+    .cam-disclaimer {
+      font-size: 0.56em; color: #888; line-height: 1.3; padding: 2px 2px 0;
+    }
+
+    /* POWER OUTAGE TOGGLE + LEGEND */
+    .outage-toggle-btn {
+      background: rgba(0,0,0,0.7); color: #FFA500; border: 1px solid #FFA500;
+      border-radius: 3px; padding: 4px 8px; font-size: 0.7em; font-weight: 900; cursor: pointer;
+      transition: all 0.2s;
+    }
+    .outage-toggle-btn.active { background: #FFA500; color: #000; box-shadow: 0 0 10px #FFA500; }
+    .outage-toggle-btn:hover { box-shadow: 0 0 8px #FFA500; }
+    #live-only-toggle-btn.active { background: #FF3B3B; color: #000; box-shadow: 0 0 10px #FF3B3B; }
+    .cam-box.is-live { border-color: #FF3B3B; }
+    .cam-live-badge {
+      position: absolute; top: 2px; left: 2px; background: #FF3B3B; color: #000;
+      font-size: 0.5em; font-weight: 900; padding: 1px 4px; border-radius: 3px;
+      box-shadow: 0 0 6px #FF3B3B;
+    }
+    .outage-status-line { font-size: 0.56em; color: #888; line-height: 1.3; }
+
+    .system-log-box {
+      background: rgba(0,0,0,0.8); border: 1px solid rgba(0,255,204,0.4);
+      border-radius: 4px; padding: 6px; font-size: 0.6em; color: #00ffcc;
+      height: 110px; overflow-y: auto; line-height: 1.3;
+    }
+
+    /* RIGHT PANEL: THREAT INDEX + WARNINGS LIST + AI COMPANION */
+    #right-panel {
+      grid-row: 2; grid-column: 3;
+      background: rgba(2, 4, 8, 0.95); border-left: 2px solid #00ffcc;
+      padding: 10px; display: flex; flex-direction: column; gap: 10px;
+      backdrop-filter: blur(12px); overflow-y: auto; z-index: 20;
+    }
+
+    /* SEVERE HUD */
+    #radar-hud-box {
+      width: 100%; background: rgba(2, 4, 8, 0.92);
+      border: 2px solid #FF1744; border-radius: 6px; padding: 12px;
+      box-shadow: 0 0 25px rgba(255, 23, 68, 0.4);
+      cursor: pointer; transition: all 0.3s ease; flex-shrink: 0;
+    }
+    #radar-hud-box.synapse-overdrive {
+      border-color: #00ffcc;
+      box-shadow: 0 0 40px #00ffcc, inset 0 0 20px rgba(0,255,204,0.5);
+      background: rgba(0, 20, 20, 0.95);
+    }
+    .hud-title-banner {
+      background: #FF1744; color: #FFF; font-weight: 900; font-size: 1.1em;
+      padding: 6px 10px; margin: -12px -12px 10px -12px; border-radius: 4px 4px 0 0;
+      text-transform: uppercase; display: flex; justify-content: space-between;
+      transition: background 0.3s;
+    }
+    #radar-hud-box.synapse-overdrive .hud-title-banner {
+      background: #00ffcc; color: #000; text-shadow: 0 0 5px #fff;
+    }
+    .hud-stat-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+    .hud-stat-card { background: rgba(0,0,0,0.7); padding: 8px; border-radius: 4px; border: 1px solid #333; text-align: center; }
+    .hud-stat-val { font-size: 1.4em; font-weight: 900; color: #FF1744; }
+    #radar-hud-box.synapse-overdrive .hud-stat-val { color: #00ffcc; text-shadow: 0 0 10px #00ffcc; }
+    .hud-stat-lbl { font-size: 0.6em; text-transform: uppercase; color: #AAA; font-weight: 800; }
+
+    /* THREAT INDEX SCORE */
+    #threat-index-box {
+      flex-shrink: 0; background: rgba(0,0,0,0.75); border: 1px solid #333;
+      border-radius: 6px; padding: 10px; text-align: center; transition: all 0.3s;
+    }
+    #threat-index-box .ti-label { font-size: 0.65em; letter-spacing: 1px; color: #AAA; font-weight: 800; text-transform: uppercase; }
+    #threat-index-box .ti-score { font-size: 2.4em; font-weight: 900; line-height: 1; margin: 2px 0; transition: color 0.3s, text-shadow 0.3s; }
+    #threat-index-box .ti-grade { font-size: 0.75em; font-weight: 900; letter-spacing: 2px; text-transform: uppercase; }
+    #threat-index-box .ti-bar-track { height: 6px; background: #222; border-radius: 3px; margin-top: 8px; overflow: hidden; }
+    #threat-index-box .ti-bar-fill { height: 100%; width: 0%; transition: width 0.5s, background 0.5s; }
+
+    /* SCROLLING ACTIVE WARNINGS LIST */
+    #warnings-list-panel { flex: 1; display: flex; flex-direction: column; min-height: 60px; }
+    #warnings-list-panel .panel-title { margin-bottom: 4px; }
+    #warnings-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 5px; }
+    .warning-row {
+      background: rgba(0,0,0,0.7); border-left: 3px solid #FF1744; border-radius: 3px;
+      padding: 5px 7px; cursor: pointer; transition: all 0.15s;
+    }
+    .warning-row:hover { background: rgba(255,23,68,0.15); border-left-color: #00ffcc; }
+    .warning-row .wr-event { font-size: 0.68em; font-weight: 900; color: #FF6B6B; text-transform: uppercase; }
+    .warning-row .wr-area { font-size: 0.6em; color: #FDE047; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #warnings-list-empty { font-size: 0.65em; color: #00ffcc; text-align: center; padding: 12px; }
+
+    /* AI COMPANION ORB */
+    #ai-companion {
+      flex-shrink: 0; background: rgba(0,0,0,0.75); border: 1px solid #333;
+      border-radius: 6px; padding: 10px; display: flex; gap: 10px; align-items: flex-start;
+      transition: border-color 0.4s;
+    }
+    #ai-companion.ai-alert { border-color: #FF1744; }
+    #ai-companion.ai-scanning { border-color: #FDE047; }
+    .ai-orb-wrap { position: relative; width: 46px; height: 46px; flex-shrink: 0; }
+    .ai-orb-ring {
+      position: absolute; inset: 0; border-radius: 50%;
+      border: 2px solid #00ffcc; opacity: 0.5;
+      animation: aiRingPulse 2.2s ease-out infinite;
+    }
+    #ai-companion.ai-alert .ai-orb-ring { border-color: #FF1744; animation-duration: 0.9s; }
+    #ai-companion.ai-scanning .ai-orb-ring { border-color: #FDE047; animation-duration: 1.4s; }
+    @keyframes aiRingPulse {
+      0% { transform: scale(0.7); opacity: 0.7; }
+      100% { transform: scale(1.5); opacity: 0; }
+    }
+    .ai-orb-core {
+      position: absolute; top: 50%; left: 50%; width: 26px; height: 26px;
+      margin: -13px 0 0 -13px; border-radius: 50%;
+      background: radial-gradient(circle at 35% 30%, #baffef, #00ffcc 55%, #007a63 100%);
+      box-shadow: 0 0 14px #00ffcc, inset 0 0 6px rgba(0,0,0,0.4);
+      animation: aiCoreBob 3s ease-in-out infinite;
+    }
+    #ai-companion.ai-alert .ai-orb-core {
+      background: radial-gradient(circle at 35% 30%, #ffd6d6, #FF1744 55%, #7a0015 100%);
+      box-shadow: 0 0 14px #FF1744, inset 0 0 6px rgba(0,0,0,0.4);
+    }
+    #ai-companion.ai-scanning .ai-orb-core {
+      background: radial-gradient(circle at 35% 30%, #fff6c9, #FDE047 55%, #7a6600 100%);
+      box-shadow: 0 0 14px #FDE047, inset 0 0 6px rgba(0,0,0,0.4);
+    }
+    @keyframes aiCoreBob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
+    .ai-orb-sweep {
+      position: absolute; top: 50%; left: 50%; width: 23px; height: 2px;
+      margin-top: -1px; transform-origin: 0 50%;
+      background: linear-gradient(90deg, rgba(0,0,0,0.55), transparent);
+      animation: aiSweepSpin 2.5s linear infinite;
+    }
+    @keyframes aiSweepSpin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    .ai-info { flex: 1; min-width: 0; }
+    .ai-name-row { display: flex; justify-content: space-between; align-items: baseline; }
+    .ai-name { font-size: 0.78em; font-weight: 900; color: #00ffcc; letter-spacing: 1px; }
+    #ai-companion.ai-alert .ai-name { color: #FF6B6B; }
+    #ai-companion.ai-scanning .ai-name { color: #FDE047; }
+    .ai-status { font-size: 0.55em; font-weight: 800; letter-spacing: 1px; color: #888; text-transform: uppercase; }
+    .ai-bubble {
+      margin-top: 4px; font-size: 0.66em; line-height: 1.35; color: #E0FFF6;
+      background: rgba(255,255,255,0.04); border-radius: 4px; padding: 5px 7px;
+      border: 1px solid rgba(0,255,204,0.15);
+    }
+
+    #bottom-ticker-bar {
+      grid-row: 3; grid-column: 1 / -1;
+      background: rgba(127, 29, 29, 0.9); color: #FFF; display: flex; align-items: center;
+      border-top: 2px solid #00ffcc; padding: 0 4px;
+    }
+
+    /* FULL SCREEN / DETAILS MODAL */
+    #detail-modal-overlay {
+      display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+      background: rgba(0,0,0,0.96); z-index: 5000;
+      flex-direction: column; align-items: center; justify-content: center; padding: 20px;
+    }
+    .modal-content-box {
+      width: 90%; max-width: 1000px; background: rgba(2, 8, 15, 0.98);
+      border: 2px solid #00ffcc; border-radius: 8px; padding: 20px;
+      box-shadow: 0 0 40px rgba(0,255,204,0.3); display: flex; flex-direction: column; gap: 15px;
+    }
+
+    #start-overlay {
+      position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+      background: rgba(2,4,8,0.98); z-index: 2000;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 15px;
+    }
+    #start-btn {
+      background: #00ffcc; color: #000; border: none; padding: 18px 40px;
+      font-size: 1.5em; font-weight: 900; border-radius: 8px; cursor: pointer;
+      box-shadow: 0 0 20px rgba(0,255,204,0.5);
+    }
+
+    /* ─── WIND BARB MARKERS ─── */
+    .wind-barb-marker {
+      display: flex; align-items: center; justify-content: center;
+    }
+    .wind-barb-marker svg {
+      filter: drop-shadow(0 0 3px #fff) drop-shadow(0 0 8px currentColor) drop-shadow(0 0 16px currentColor) drop-shadow(0 0 24px currentColor);
+    }
+    .wind-tooltip {
+      background: rgba(0,0,0,0.9) !important;
+      border: 1px solid #00ffcc !important;
+      color: #00ffcc !important;
+      font-family: 'Courier New', monospace !important;
+      font-weight: 900 !important;
+      font-size: 0.75em !important;
+    }
+
+    /* ─── LIGHTNING STRIKE MARKERS ─── */
+    .lightning-strike-marker {
+      position: relative; width: 0; height: 0;
+    }
+    .lightning-bolt {
+      position: absolute; top: -28px; left: -5px;
+      width: 10px; height: 56px;
+      background: linear-gradient(180deg, #fff 0%, #fff700 25%, #ff9500 55%, #ff2200 85%, transparent 100%);
+      clip-path: polygon(50% 0%, 100% 35%, 65% 35%, 80% 100%, 20% 45%, 55% 45%);
+      animation: lightningFlash 0.6s ease-out forwards;
+      filter: drop-shadow(0 0 14px #fff) drop-shadow(0 0 28px #fff700) drop-shadow(0 0 42px #ff4500);
+    }
+    @keyframes lightningFlash {
+      0% { opacity: 0; transform: scale(0.3); }
+      15% { opacity: 1; transform: scale(1.6); }
+      40% { opacity: 0.8; transform: scale(1.2); }
+      100% { opacity: 0; transform: scale(0.9); }
+    }
+
+    /* ─── TORNADO LOGO MARKERS ─── */
+    .tornado-logo-marker {
+      width: 56px; height: 56px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .tornado-logo-inner {
+      width: 48px; height: 48px;
+      animation: tornadoPulse 1s ease-in-out infinite;
+    }
+    .tornado-logo-inner svg {
+      width: 48px; height: 48px;
+      filter: drop-shadow(0 0 14px #FF1744) drop-shadow(0 0 28px #FF0000);
+      animation: tornadoSpin 3s linear infinite;
+    }
+    @keyframes tornadoPulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.25); }
+    }
+    @keyframes tornadoSpin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    /* ─── CONFIRMED TORNADO REPORT MARKERS ─── */
+    .confirmed-tornado-marker {
+      width: 56px; height: 56px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .confirmed-tornado-inner {
+      width: 48px; height: 48px;
+      animation: confirmedTornadoPulse 0.8s ease-in-out infinite;
+    }
+    .confirmed-tornado-inner svg {
+      width: 48px; height: 48px;
+      filter: drop-shadow(0 0 16px #FF00FF) drop-shadow(0 0 32px #FF1744) drop-shadow(0 0 48px #FF0000);
+    }
+    @keyframes confirmedTornadoPulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.35); opacity: 0.85; }
+    }
+
+    /* ─── LAYER TOGGLE BUTTONS ─── */
+    .layer-toggle-btn {
+      background: rgba(0,0,0,0.7); color: #FFD700; border: 1px solid #FFD700;
+      border-radius: 3px; padding: 4px 8px; font-size: 0.68em; font-weight: 900; cursor: pointer;
+      transition: all 0.2s; font-family: 'Courier New', Courier, monospace;
+    }
+    .layer-toggle-btn.active { background: #FFD700; color: #000; box-shadow: 0 0 12px #FFD700; }
+    .layer-toggle-btn:hover { box-shadow: 0 0 8px #FFD700; }
+
+    /* ─── STORM WATCH PANEL ─── */
+    #storm-watch-box {
+      flex-shrink: 0; background: rgba(0,0,0,0.75); border: 1px solid #333;
+      border-radius: 6px; padding: 10px; transition: all 0.3s;
+    }
+    #storm-watch-box.storm-active { border-color: #FF1744; box-shadow: 0 0 15px rgba(255,23,68,0.3); }
+    #storm-watch-box.storm-elevated { border-color: #FFA500; box-shadow: 0 0 15px rgba(255,165,0,0.3); }
+    .sw-title { font-size: 0.65em; letter-spacing: 1px; color: #AAA; font-weight: 800; text-transform: uppercase; display:flex; justify-content:space-between; align-items:center; }
+    .sw-risk-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; margin-top: 6px; }
+    .sw-risk-cell { background: rgba(0,0,0,0.5); border-radius: 4px; padding: 5px 3px; text-align: center; border: 1px solid #333; transition: all 0.3s; }
+    .sw-risk-cell.active { border-color: currentColor; box-shadow: 0 0 8px currentColor; }
+    .sw-risk-day { font-size: 0.55em; font-weight: 800; color: #888; text-transform: uppercase; }
+    .sw-risk-val { font-size: 0.78em; font-weight: 900; margin-top: 2px; }
+    .sw-risk-bar { height: 3px; border-radius: 2px; margin-top: 3px; background: #333; overflow: hidden; }
+    .sw-risk-bar-fill { height: 100%; border-radius: 2px; transition: width 0.5s, background 0.5s; }
+    .sw-summary { font-size: 0.58em; color: #ccc; margin-top: 6px; line-height: 1.4; }
+    .sw-summary b { color: #00ffcc; }
+    .sw-refresh-btn { background: rgba(0,0,0,0.5); color: #888; border: 1px solid #444; border-radius: 3px; padding: 2px 6px; font-size: 0.5em; cursor: pointer; transition: all 0.2s; }
+    .sw-refresh-btn:hover { color: #00ffcc; border-color: #00ffcc; }
+
+  </style>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- PWA: Progressive Web App support -->
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#020408">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Synapse Tactical">
+  <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect fill='%23020408' width='192' height='192'/%3E%3Ctext x='96' y='120' text-anchor='middle' font-size='100'%3E🌪️%3C/text%3E%3C/svg%3E">
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+  </script>
+  <base target="_blank">
+<base target="_blank">
+</head>
+<body>
+
+  <!-- MODAL FOR DETAILED WARNINGS OR LIVE CAM STREAMS -->
+  <div id="detail-modal-overlay">
+    <div class="modal-content-box">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #00ffcc; padding-bottom: 8px;">
+        <div id="modal-title" style="font-size: 1.3em; font-weight: 900; color: #00ffcc;">SYNAPSE TACTICAL FEED</div>
+        <button onclick="closeModal()" style="background:#FF1744; color:#FFF; border:none; padding:6px 14px; font-weight:900; cursor:pointer; border-radius:4px;">✕ CLOSE</button>
+      </div>
+      <div id="modal-body" style="font-size: 0.9em; color: #fff; max-height: 60vh; overflow-y: auto; line-height: 1.5;">
+        <!-- Dynamic Content -->
+      </div>
+    </div>
+  </div>
+
+  <!-- START BOOT SCREEN -->
+  <div id="start-overlay">
+    <h1 style="color: #00ffcc; text-shadow: 0 0 15px #00ffcc; letter-spacing: 2px;">SYNAPSE TACTICAL AI</h1>
+    <p style="color: #88ffee; letter-spacing: 1px;">INITIALIZING MAP CAMERA SCANNER & NEXRAD RADAR</p>
+    <button id="start-btn" onclick="initBroadcast()">ENGAGE SYNAPSE KERNEL</button>
+  </div>
+
+  <!-- MAIN HUD INTERFACE -->
+  <div id="app-container">
+    <div id="map1" class="map-view">
+      <div class="spinning-radar-map-layer"><div class="spinning-radar-sweep"></div></div>
+    </div>
+    <div id="map2" class="map-view"></div>
+  </div>
+
+  <div id="ui-overlay">
+    <div id="top-alert-bar" onclick="activateSynapseOverdrive()">
+      <div class="top-time-box">
+        <div class="time-main" id="top-clock">--:-- ET</div>
+        <div class="date-sub">SYNAPSE AI</div>
+      </div>
+      <div class="top-alert-content">
+        <div class="top-alert-title" id="alert-title">SYNAPSE SECURE LINK ACTIVE</div>
+        <div class="top-alert-counties" id="alert-counties">[CLICK TO TOGGLE SYNAPSE OVERDRIVE HUD]</div>
+      </div>
+      <div style="display:flex; gap:6px;">
+        <button class="action-btn" id="view-warning-btn" onclick="event.stopPropagation(); viewActiveWarning()">🎯 VIEW WARNING</button>
+        <button class="action-btn" id="dual-view-btn" onclick="event.stopPropagation(); toggleDualView()">SPLIT VIEW</button>
+      </div>
+    </div>
+
+    <!-- LEFT PANEL: DYNAMIC CAMERAS & CONTROLS -->
+    <div id="left-panel">
+      <div class="panel-header">
+        <div class="panel-title">📹 CAMS <span id="cam-count" style="color:#FDE047;">(0)</span> <span id="cam-live-count" style="color:#FF3B3B;"></span></div>
+        <button class="scan-btn" onclick="scanAreaForCameras()">🔍 SCAN AREA</button>
+      </div>
+      <div style="display:flex; align-items:center; gap:6px;">
+        <button class="outage-toggle-btn" id="live-only-toggle-btn" onclick="toggleLiveOnlyFilter()" style="border-color:#FF3B3B; color:#FF3B3B;">🔴 LIVE ONLY</button>
+      </div>
+      <div class="cam-disclaimer" id="cam-disclaimer">
+        🔴 LIVE = true streaming video (real live feed). Everything else is a still image, auto-refreshed every ~4 min — not video.
+      </div>
+      <div class="cam-grid" id="cam-grid">
+        <div style="grid-column: span 2; text-align: center; color: #88ffee; font-size: 0.7em; padding: 20px;">
+          CLICK "SCAN AREA" TO LOCK ONTO ACTIVE REGIONAL CAMS
+        </div>
+      </div>
+
+      <div class="panel-header" style="margin-top: 4px;">
+        <div class="panel-title">⚡ POWER OUTAGES</div>
+        <button class="outage-toggle-btn" id="outage-toggle-btn" onclick="toggleOutageLayer()">SHOW</button>
+      </div>
+      <div class="outage-status-line" id="outage-status-line">DTE Energy (SE Michigan) live outage map — not loaded yet.</div>
+      <div class="outage-status-line" id="outage-official-links"></div>
+      <button class="outage-toggle-btn" id="embed-official-map-btn" onclick="openOfficialMapEmbed()"
+        style="width:100%; margin-top:6px; border-color:#FFA500; color:#FFA500;">
+        🗺️ VIEW OFFICIAL LIVE MAP
+      </button>
+      <button class="outage-toggle-btn" id="analyze-view-btn" onclick="analyzeCurrentView()"
+        style="width:100%; margin-top:6px; border-color:#00ffcc; color:#00ffcc;">
+        🤖 ANALYZE THIS VIEW
+      </button>
+
+      <div class="panel-header" style="margin-top: 6px;">
+        <div class="panel-title">⚡ STORM FX</div>
+      </div>
+      <div style="display:flex; gap:5px; flex-wrap: wrap;">
+        <button class="layer-toggle-btn" id="lightning-toggle-btn" onclick="toggleLightningLayer()">⚡ LIGHTNING</button>
+        <button class="layer-toggle-btn" id="wind-toggle-btn" onclick="toggleWindLayer()">💨 WIND</button>
+        <button class="layer-toggle-btn active" id="tornado-logo-toggle-btn" onclick="toggleTornadoLogoLayer()">🌪️ TORNADO</button>
+      </div>
+      <div class="storm-fx-status" id="storm-fx-status" style="font-size:0.54em; color:#888; line-height:1.3; margin-top:4px;">
+        Storm FX: lightning strikes inside severe cells, wind barbs from live Open-Meteo, tornado logos on warnings.
+      </div>
+      <div class="panel-header" style="margin-top: 4px;">
+        <div class="panel-title">🛡️ SYNAPSE LOGS</div>
+      </div>
+      <div class="system-log-box" id="system-log">
+        [SYNAPSE] KERNEL ONLINE. READY FOR AREA SCAN.<br>
+      </div>
+    </div>
+
+    <!-- RIGHT PANEL: THREAT INDEX, SEVERE HUD, WARNINGS LIST, AI COMPANION -->
+    <div id="right-panel">
+
+      <!-- STORM WATCH: SPC Convective Outlooks -->
+      <div id="storm-watch-box">
+        <div class="sw-title">
+          <span>🔮 STORM WATCH (SPC)</span>
+          <button class="sw-refresh-btn" onclick="fetchSPCOutlooks()">↻ REFRESH</button>
+        </div>
+        <div class="sw-risk-grid" id="sw-risk-grid">
+          <div class="sw-risk-cell" id="sw-day1"><div class="sw-risk-day">TODAY</div><div class="sw-risk-val" style="color:#888;">—</div><div class="sw-risk-bar"><div class="sw-risk-bar-fill" style="width:0%"></div></div></div>
+          <div class="sw-risk-cell" id="sw-day2"><div class="sw-risk-day">TOMORROW</div><div class="sw-risk-val" style="color:#888;">—</div><div class="sw-risk-bar"><div class="sw-risk-bar-fill" style="width:0%"></div></div></div>
+          <div class="sw-risk-cell" id="sw-day3"><div class="sw-risk-day">DAY 3</div><div class="sw-risk-val" style="color:#888;">—</div><div class="sw-risk-bar"><div class="sw-risk-bar-fill" style="width:0%"></div></div></div>
+        </div>
+        <div class="sw-summary" id="sw-summary">Loading SPC outlooks...</div>
+      </div>
+      <!-- SYNAPSE THREAT INDEX -->
+      <div id="threat-index-box">
+        <div class="ti-label">SYNAPSE THREAT INDEX</div>
+        <div class="ti-score" id="ti-score" style="color:#00ffcc; text-shadow:0 0 10px #00ffcc;">0</div>
+        <div class="ti-grade" id="ti-grade" style="color:#00ffcc;">ALL CLEAR</div>
+        <div class="ti-bar-track"><div class="ti-bar-fill" id="ti-bar" style="background:#00ffcc;"></div></div>
+      </div>
+
+      <!-- SEVERE HUD (CLICKABLE FOR FULL DETAILS) -->
+      <div id="radar-hud-box" onclick="openFullHUDDetails()">
+        <div class="hud-title-banner">
+          <span>TACTICAL HUD (CLICK FOR DETAILS)</span>
+          <span style="color:#FFEA00;" id="hud-alert-count">0</span>
+        </div>
+        <div class="hud-stat-grid">
+          <div class="hud-stat-card">
+            <div class="hud-stat-val" id="hud-val-tor">0</div>
+            <div class="hud-stat-lbl">TORNADO WARNINGS</div>
+          </div>
+          <div class="hud-stat-card">
+            <div class="hud-stat-val" id="hud-val-svr" style="color:#FDE047;">0</div>
+            <div class="hud-stat-lbl">SEVERE THUNDERSTORM</div>
+          </div>
+          <div class="hud-stat-card">
+            <div class="hud-stat-val" id="hud-val-ffw" style="color:#3B82F6;">0</div>
+            <div class="hud-stat-lbl">FLASH FLOOD WARNING</div>
+          </div>
+          <div class="hud-stat-card">
+            <div class="hud-stat-val" id="hud-val-outages" style="color:#FFA500;">--</div>
+            <div class="hud-stat-lbl">OUTAGE AREAS (DTE)</div>
+          </div>
+          <div class="hud-stat-card">
+            <div class="hud-stat-val" id="hud-val-confirmed-tor" style="color:#FF00FF;">0</div>
+            <div class="hud-stat-lbl" id="confirmed-tor-title">TORNADOES (CONFIRMED)</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SCROLLING ACTIVE WARNINGS LIST -->
+      <div id="warnings-list-panel">
+        <div class="panel-header">
+          <div class="panel-title">⚠️ ACTIVE WARNINGS</div>
+        </div>
+        <div id="warnings-list">
+          <div id="warnings-list-empty">🟢 NO ACTIVE WARNINGS IN GRID</div>
+        </div>
+      </div>
+
+      <!-- AI COMPANION -->
+      <div id="ai-companion">
+        <div class="ai-orb-wrap">
+          <div class="ai-orb-ring"></div>
+          <div class="ai-orb-core"></div>
+          <div class="ai-orb-sweep"></div>
+        </div>
+        <div class="ai-info">
+          <div class="ai-name-row">
+            <span class="ai-name">SYNAPSE</span>
+            <span class="ai-status" id="ai-status">IDLE</span>
+          </div>
+          <div class="ai-bubble" id="ai-bubble">Standing by. Awaiting kernel engagement.</div>
+        </div>
+      </div>
+
+    </div>
+
+    <div id="bottom-ticker-bar">
+      <marquee style="font-weight: 900; font-size: 1em;" id="ticker-marquee">
+        📡 SYNAPSE LINKED TO LIVE NWS FEED ...
+      </marquee>
+    </div>
+  </div>
+
+  <script>
+    let map1, map2, isDual = false, audioCtx = null, alertLayer1, alertLayer2, previousTornadoCount = 0, previousFFWCount = 0;
+    let isSynapseOverdrive = false;
+    let cachedAlertsFeatures = [];
+    let activeCameraMarkers = [];
+    let latestTornadoFeature = null;
+    let latestFFWFeature = null;
+    let outageLayer = null, outageVisible = false, lastOutageFetchOk = null;
+    let lastCamScanTimestamp = 0;
+    let lastOutageAreaCount = null;
+    let lastOutageGeojson = null;      // full outage geojson, kept even when layer is hidden
+    let lastOutageFetchMethod = null;  // 'direct' or 'browser_fallback', for the AI summary to be honest about
+
+    // Real camera data loaded from /api/webcams (backed by the Windy Webcams
+    // API — real cameras, real precise lat/lng). Populated by scanAreaForCameras().
+    let regionalCameraDatabase = [];
+
+    function logMessage(msg) {
+      const logBox = document.getElementById('system-log');
+      logBox.innerHTML += `[${new Date().toLocaleTimeString()}] ${msg}<br>`;
+      logBox.scrollTop = logBox.scrollHeight;
+    }
+
+    // ---- AI COMPANION -------------------------------------------------
+    // NOTE: this is NOT a live/generative AI -- there's no API key wired
+    // in here, so it can't hold a conversation or read anything beyond the
+    // NWS/camera/outage data already on screen. What it IS: a rotating bank
+    // of phrases keyed off the real current numbers (tornado/FFW/SVR counts,
+    // camera count, outage areas), picked at random so it doesn't repeat
+    // the exact same line every cycle, plus a periodic "idle chatter" tick
+    // so it says something even when nothing has changed. If you want an
+    // actual generative companion later, this is the one function
+    // (updateCompanion/pickPhrase) you'd swap for a real API call.
+    // state: 'idle' | 'scanning' | 'alert'
+    function updateCompanion(state, message) {
+      const box = document.getElementById('ai-companion');
+      const statusEl = document.getElementById('ai-status');
+      const bubbleEl = document.getElementById('ai-bubble');
+      box.classList.remove('ai-idle', 'ai-scanning', 'ai-alert');
+      box.classList.add('ai-' + state);
+      statusEl.textContent = state.toUpperCase();
+      if (message) bubbleEl.textContent = message;
+    }
+
+    const PHRASE_BANKS = {
+      tornadoOngoing: (v) => [
+        `Still tracking ${v.torCount} active tornado warning${v.torCount > 1 ? 's' : ''} near ${v.areaName}. Stay clear of windows.`,
+        `Tornado warning remains active for ${v.areaName}. Recommend sheltering now if you're in that polygon.`,
+        `${v.torCount} tornado warning${v.torCount > 1 ? 's' : ''} still up. Watching ${v.areaName} closely.`,
+      ],
+      ffwOngoing: (v) => [
+        `${v.ffwCount} flash flood warning${v.ffwCount > 1 ? 's' : ''} still active. Don't drive through flooded roads.`,
+        `Flash flooding risk remains elevated in ${v.ffwCount} area${v.ffwCount > 1 ? 's' : ''}. Turn around, don't drown.`,
+        `Still watching ${v.ffwCount} flash flood warning${v.ffwCount > 1 ? 's' : ''} on the grid.`,
+      ],
+      svrOngoing: (v) => [
+        `${v.svrCount} severe thunderstorm warning${v.svrCount > 1 ? 's' : ''} active. No tornado warnings right now.`,
+        `Watching ${v.svrCount} severe cell${v.svrCount > 1 ? 's' : ''}. Damaging wind and hail possible.`,
+        `${v.svrCount} severe thunderstorm warning${v.svrCount > 1 ? 's' : ''} on the board. Grid otherwise stable.`,
+      ],
+      allClear: () => [
+        "All sectors secure. No active severe warnings.",
+        "Grid's quiet right now. I'll flag it the moment that changes.",
+        "Nothing severe on the board. Standing by.",
+        "All clear across the grid. Cameras and radar both nominal.",
+      ],
+      idleChatter: (v) => [
+        `${v.camCount} camera${v.camCount === 1 ? '' : 's'} online, threat index at ${v.tiScore}. Holding steady.`,
+        v.outageAreas != null ? `Tracking ${v.outageAreas} DTE outage area${v.outageAreas === 1 ? '' : 's'} right now.` : null,
+        "Kernel's healthy. Radar and alert feeds both linked.",
+        `Threat index: ${v.tiScore} (${v.tiGrade}). Nothing urgent to flag.`,
+        _spcOutlookData?.day1?.max_risk && SPC_RISK_LEVELS[_spcOutlookData.day1.max_risk] >= 3
+          ? `SPC has ${SPC_RISK_NAMES[_spcOutlookData.day1.max_risk]} risk today. Watching closely.`
+          : null,
+      ].filter(Boolean),
+    };
+
+    function pickPhrase(bank, vars) {
+      const options = PHRASE_BANKS[bank](vars);
+      return options[Math.floor(Math.random() * options.length)];
+    }
+
+    function idleCompanionChatter() {
+      if (isSynapseOverdrive) return;
+      const box = document.getElementById('ai-companion');
+      if (box.classList.contains('ai-alert')) return;
+      const stormPhrase = getStormOutlookPhrase();
+      if (stormPhrase && Math.random() < 0.4) {
+        updateCompanion('scanning', stormPhrase);
+        return;
+      }
+      updateCompanion('idle', pickPhrase('idleChatter', {
+        camCount: regionalCameraDatabase.length,
+        tiScore: document.getElementById('ti-score').innerText,
+        tiGrade: document.getElementById('ti-grade').innerText,
+        outageAreas: lastOutageAreaCount,
+      }));
+    }
+
+    // ---- SYNAPSE THREAT INDEX -----------------------------------------
+    function updateThreatIndex(torCount, svrCount, ffwCount) {
+      const score = Math.min(100, torCount * 25 + ffwCount * 12 + svrCount * 8);
+      let grade, color;
+      if (score === 0)       { grade = 'ALL CLEAR';  color = '#00ffcc'; }
+      else if (score < 25)   { grade = 'ELEVATED';   color = '#FDE047'; }
+      else if (score < 60)   { grade = 'SEVERE';     color = '#FFA500'; }
+      else                   { grade = 'EXTREME';    color = '#FF1744'; }
+
+      const scoreEl = document.getElementById('ti-score');
+      const gradeEl = document.getElementById('ti-grade');
+      const barEl = document.getElementById('ti-bar');
+      scoreEl.textContent = score;
+      scoreEl.style.color = color;
+      scoreEl.style.textShadow = `0 0 10px ${color}`;
+      gradeEl.textContent = grade;
+      gradeEl.style.color = color;
+      barEl.style.width = score + '%';
+      barEl.style.background = color;
+    }
+
+    // ---- SCROLLING ACTIVE WARNINGS LIST --------------------------------
+    function renderWarningsList() {
+      const listEl = document.getElementById('warnings-list');
+      if (!cachedAlertsFeatures.length) {
+        listEl.innerHTML = `<div id="warnings-list-empty">🟢 NO ACTIVE WARNINGS IN GRID</div>`;
+        return;
+      }
+      // Tornado warnings first, then everything else
+      const sorted = [...cachedAlertsFeatures].sort((a, b) => {
+        const aTor = a.properties.event.toLowerCase().includes('tornado') ? 0 : 1;
+        const bTor = b.properties.event.toLowerCase().includes('tornado') ? 0 : 1;
+        return aTor - bTor;
+      });
+      listEl.innerHTML = sorted.map((alert) => {
+        const realIdx = cachedAlertsFeatures.indexOf(alert);
+        const p = alert.properties;
+        return `
+          <div class="warning-row" onclick="openAlertDetail(cachedAlertsFeatures[${realIdx}])">
+            <div class="wr-event">🚨 ${p.event}</div>
+            <div class="wr-area">${p.areaDesc}</div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function speakAlert(text) {
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = 1.05; utterance.pitch = 0.95;
+        window.speechSynthesis.speak(utterance);
+      }
+    }
+
+    function playSynapseBeep() {
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.frequency.value = 1200; osc.type = 'sine';
+        gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.8);
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.8);
+      } catch (e) {}
+    }
+
+    let tornadoLogoLayer = [];
+let lightningVisible = false, windVisible = false, tornadoLogoVisible = true;
+let windDataCache = [];
+let _lastWindFetch = 0;
+let lightningStrikeMarkers = [];
+let _spcOutlookData = null;
+let _lastSPCFetch = 0;
+let confirmedTornadoReports = [];
+let confirmedTornadoMarkers = [];
+let confirmedTornadoVisible = true;
+let _lastTornadoReportFetch = 0;
+const SPC_RISK_ORDER = ["TSTM", "MRGL", "SLGT", "ENH", "MDT", "HIGH"];
+const SPC_RISK_NAMES = {"TSTM": "Thunderstorm", "MRGL": "Marginal", "SLGT": "Slight", "ENH": "Enhanced", "MDT": "Moderate", "HIGH": "High"};
+const SPC_RISK_COLORS = {"TSTM": "#7CFC00", "MRGL": "#7CFC00", "SLGT": "#FFD700", "ENH": "#FF8C00", "MDT": "#FF0000", "HIGH": "#FF00FF"};
+const SPC_RISK_LEVELS = {"TSTM": 1, "MRGL": 2, "SLGT": 3, "ENH": 4, "MDT": 5, "HIGH": 6};
+
+    // ═══════════════════════════════════════════════════════════════
+    //  SOUND EFFECTS
+    // ═══════════════════════════════════════════════════════════════
+    function _ensureAudioCtx() {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      return audioCtx;
+    }
+    function _tone(freq, startTime, duration, type, peakGain) {
+      const ctx = _ensureAudioCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, ctx.currentTime + startTime);
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime + startTime);
+      gain.gain.linearRampToValueAtTime(peakGain, ctx.currentTime + startTime + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + startTime + duration);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(ctx.currentTime + startTime);
+      osc.stop(ctx.currentTime + startTime + duration + 0.05);
+    }
+    function playClickTick() { try { _tone(1800, 0, 0.06, 'square', 0.08); } catch (e) {} }
+    function playSuccessChime() { try { _tone(880, 0, 0.14, 'sine', 0.16); _tone(1320, 0.09, 0.18, 'sine', 0.16); } catch (e) {} }
+    function playErrorBuzz() {
+      try {
+        const ctx = _ensureAudioCtx();
+        const osc = ctx.createOscillator(); const gain = ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(220, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(90, ctx.currentTime + 0.35);
+        gain.gain.setValueAtTime(0.15, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(); osc.stop(ctx.currentTime + 0.4);
+      } catch (e) {}
+    }
+    function playModalOpen() {
+      try {
+        const ctx = _ensureAudioCtx();
+        const osc = ctx.createOscillator(); const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(300, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(900, ctx.currentTime + 0.18);
+        gain.gain.setValueAtTime(0.12, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(); osc.stop(ctx.currentTime + 0.22);
+      } catch (e) {}
+    }
+    function playModalClose() {
+      try {
+        const ctx = _ensureAudioCtx();
+        const osc = ctx.createOscillator(); const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(700, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(250, ctx.currentTime + 0.15);
+        gain.gain.setValueAtTime(0.1, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.16);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(); osc.stop(ctx.currentTime + 0.18);
+      } catch (e) {}
+    }
+    function playWarningTone() {
+      try { _tone(950, 0, 0.16, 'triangle', 0.15); _tone(950, 0.24, 0.16, 'triangle', 0.15); } catch (e) {}
+    }
+    function playTornadoBeep() {
+      try {
+        const ctx = _ensureAudioCtx();
+        const now = ctx.currentTime;
+        for (let cycle = 0; cycle < 3; cycle++) {
+          const t = now + cycle * 1.6;
+          const osc1 = ctx.createOscillator(); const osc2 = ctx.createOscillator(); const gain = ctx.createGain();
+          osc1.type = 'square'; osc2.type = 'square';
+          osc1.frequency.value = 853; osc2.frequency.value = 960;
+          gain.gain.setValueAtTime(0.35, t);
+          gain.gain.setValueAtTime(0.35, t + 0.75);
+          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.82);
+          osc1.connect(gain); osc2.connect(gain); gain.connect(ctx.destination);
+          osc1.start(t); osc1.stop(t + 0.85);
+          osc2.start(t); osc2.stop(t + 0.85);
+        }
+      } catch (e) {}
+    }
+    function playThunderRumble() {
+      try {
+        const ctx = _ensureAudioCtx();
+        const bufferSize = ctx.sampleRate * 3;
+        const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.6));
+        const noise = ctx.createBufferSource(); noise.buffer = buffer;
+        const filter = ctx.createBiquadFilter(); filter.type = 'lowpass'; filter.frequency.value = 90; filter.Q.value = 0.8;
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0.001, ctx.currentTime);
+        gain.gain.linearRampToValueAtTime(0.28, ctx.currentTime + 0.15);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 3.0);
+        noise.connect(filter); filter.connect(gain); gain.connect(ctx.destination);
+        noise.start();
+      } catch (e) {}
+    }
+    function playWindHowl() {
+      try {
+        const ctx = _ensureAudioCtx();
+        const bufferSize = ctx.sampleRate * 4;
+        const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1);
+        const noise = ctx.createBufferSource(); noise.buffer = buffer;
+        const filter = ctx.createBiquadFilter(); filter.type = 'bandpass'; filter.frequency.value = 350; filter.Q.value = 0.4;
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0.001, ctx.currentTime);
+        gain.gain.linearRampToValueAtTime(0.18, ctx.currentTime + 0.8);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 4.0);
+        noise.connect(filter); filter.connect(gain); gain.connect(ctx.destination);
+        noise.start();
+      } catch (e) {}
+    }
+    function playBootSequence() {
+      try {
+        const ctx = _ensureAudioCtx(); const now = ctx.currentTime;
+        const osc = ctx.createOscillator(); const gain = ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(60, now);
+        osc.frequency.exponentialRampToValueAtTime(880, now + 0.9);
+        gain.gain.setValueAtTime(0.001, now);
+        gain.gain.linearRampToValueAtTime(0.14, now + 0.4);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 1.1);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(now); osc.stop(now + 1.1);
+        _tone(1047, now + 1.3, 0.12, 'sine', 0.14);
+        _tone(1319, now + 1.45, 0.15, 'sine', 0.14);
+        _tone(1568, now + 1.65, 0.2, 'sine', 0.16);
+      } catch (e) {}
+    }
+    function playScanLock() {
+      try {
+        const ctx = _ensureAudioCtx(); const now = ctx.currentTime;
+        const osc = ctx.createOscillator(); const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(350, now);
+        osc.frequency.exponentialRampToValueAtTime(1400, now + 0.25);
+        gain.gain.setValueAtTime(0.001, now);
+        gain.gain.linearRampToValueAtTime(0.22, now + 0.12);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(now); osc.stop(now + 0.35);
+        _tone(2200, now + 0.4, 0.08, 'sine', 0.12);
+        _tone(2600, now + 0.5, 0.1, 'sine', 0.1);
+      } catch (e) {}
+    }
+    function playOutageAlert() {
+      try { for (let i = 0; i < 3; i++) { _tone(520, i * 0.35, 0.18, 'sawtooth', 0.13); _tone(380, i * 0.35 + 0.12, 0.18, 'sawtooth', 0.13); } } catch (e) {}
+    }
+    function playRadarPing() {
+      try {
+        const ctx = _ensureAudioCtx();
+        const osc = ctx.createOscillator(); const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(1600, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(3200, ctx.currentTime + 0.08);
+        gain.gain.setValueAtTime(0.001, ctx.currentTime);
+        gain.gain.linearRampToValueAtTime(0.1, ctx.currentTime + 0.03);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(); osc.stop(ctx.currentTime + 0.15);
+      } catch (e) {}
+    }
+    function playAlertSiren() { playTornadoBeep(); }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  WIND BARBS (live data, rotated SVG markers — BULLETPROOF)
+    // ═══════════════════════════════════════════════════════════════
+    function generateWindBarbSVG(speedMph, directionDeg) {
+      const knots = speedMph * 0.868976;
+      const barbLen = 32;
+      const color = speedMph >= 30 ? '#FF1744' : speedMph >= 15 ? '#FFD700' : '#00ffcc';
+      let svg = `<svg width="64" height="64" viewBox="0 0 64 64" style="transform: rotate(${directionDeg}deg); overflow:visible;">`;
+      svg += `<circle cx="32" cy="32" r="28" fill="rgba(0,0,0,0.35)" stroke="${color}" stroke-width="1" opacity="0.6"/>`;
+      svg += `<line x1="32" y1="32" x2="32" y2="${32 - barbLen}" stroke="${color}" stroke-width="3" stroke-linecap="round"/>`;
+      const fullBarbs = Math.min(Math.floor(knots / 10), 5);
+      const halfBarb = (knots % 10) >= 5;
+      let barbY = 32 - barbLen + 5;
+      for (let i = 0; i < fullBarbs; i++) {
+        svg += `<line x1="32" y1="${barbY}" x2="44" y2="${barbY - 7}" stroke="${color}" stroke-width="2.5" stroke-linecap="round"/>`;
+        barbY += 6;
+      }
+      if (halfBarb && fullBarbs < 5) {
+        svg += `<line x1="32" y1="${barbY}" x2="38" y2="${barbY - 3.5}" stroke="${color}" stroke-width="2.5" stroke-linecap="round"/>`;
+      }
+      if (knots >= 50) {
+        svg += `<polygon points="32,${32-barbLen} 44,${32-barbLen+10} 32,${32-barbLen+5}" fill="#FF1744"/>`;
+      }
+      svg += `</svg>`;
+      return svg;
+    }
+
+    async function fetchWindData() {
+      const now = Date.now();
+      if (now - _lastWindFetch < 5 * 60 * 1000 && windDataCache.length > 0) {
+        renderWindBarbs();
+        return;
+      }
+      _lastWindFetch = now;
+      logMessage("💨 FETCHING LIVE WIND DATA... (this may take 20-30 seconds)");
+      updateCompanion('scanning', 'Fetching wind data from OpenWeatherMap across the grid...');
+      try {
+        const res = await fetch('/api/wind');
+        const payload = await res.json();
+        if (!payload.ok || !payload.grid || payload.grid.length === 0) {
+          logMessage("❌ Wind data empty from server.");
+          playErrorBuzz();
+          updateCompanion('idle', 'Wind data came back empty. The API might be slow or the key needs checking.');
+          return;
+        }
+        windDataCache = payload.grid.filter(w => w && w.speed != null);
+        const src = payload.source || 'unknown';
+        logMessage(`💨 WIND: ${windDataCache.length} points loaded from ${src}.`);
+        updateCompanion('idle', `Wind data loaded: ${windDataCache.length} grid points. Toggle WIND to see barbs.`);
+        if (windVisible) renderWindBarbs();
+      } catch (e) {
+        logMessage(`❌ Wind fetch error: ${e.message}`);
+        playErrorBuzz();
+        updateCompanion('idle', 'Wind data fetch failed. Check that app.py is running.');
+      }
+    }
+
+    let windBarbMarkers = [];
+    function renderWindBarbs() {
+      windBarbMarkers.forEach(m => { try { map1.removeLayer(m); } catch(e) {} });
+      windBarbMarkers = [];
+      if (!windVisible) return;
+      if (windDataCache.length === 0) {
+        logMessage("💨 No wind data yet. Click WIND again or wait for fetch to complete.");
+        return;
+      }
+      let rendered = 0;
+      windDataCache.forEach(w => {
+        if (!w || w.speed == null || w.speed < 1) return;
+        const icon = L.divIcon({
+          className: 'wind-barb-marker',
+          html: generateWindBarbSVG(w.speed, w.direction),
+          iconSize: [64, 64],
+          iconAnchor: [32, 32]
+        });
+        const marker = L.marker([w.lat, w.lng], { icon, zIndexOffset: 500 }).addTo(map1);
+        marker.bindTooltip(`💨 ${w.speed.toFixed(1)} mph from ${w.direction}°`, { sticky: true, opacity: 0.95, className: 'wind-tooltip' });
+        windBarbMarkers.push(marker);
+        rendered++;
+      });
+      if (rendered > 0) {
+        logMessage(`💨 ${rendered} wind barbs rendered. Red=30+ mph, Yellow=15-30 mph, Cyan=<15 mph.`);
+        playSuccessChime();
+      } else {
+        logMessage("💨 Wind data loaded but all speeds were below 1 mph.");
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  LIGHTNING (HYBRID: Open-Meteo storms + NWS severe warnings)
+    // ═══════════════════════════════════════════════════════════════
+    let thunderstormDataCache = [];
+    let _lastThunderstormFetch = 0;
+
+    async function fetchThunderstormData() {
+      const now = Date.now();
+      if (now - _lastThunderstormFetch < 5 * 60 * 1000 && thunderstormDataCache.length > 0) return;
+      _lastThunderstormFetch = now;
+      try {
+        const res = await fetch('/api/thunderstorms');
+        const payload = await res.json();
+        if (payload.ok && payload.storms) {
+          thunderstormDataCache = payload.storms;
+          logMessage(`⚡ Open-Meteo: ${payload.count} grid points with active thunderstorms.`);
+        }
+      } catch (e) {
+        logMessage(`⚡ Storm data fetch error: ${e.message}`);
+      }
+    }
+
+    function buildLightningLocations() {
+      const locations = [];
+      thunderstormDataCache.forEach(s => {
+        locations.push({ lat: s.lat, lng: s.lng, source: 'Open-Meteo', info: `Code ${s.weather_code}` });
+      });
+      cachedAlertsFeatures.forEach(alert => {
+        const evt = (alert.properties?.event || '').toLowerCase();
+        if (evt.includes('thunderstorm') || evt.includes('tornado')) {
+          try {
+            const layer = L.geoJSON(alert);
+            const bounds = layer.getBounds();
+            if (bounds.isValid()) {
+              const center = bounds.getCenter();
+              locations.push({ lat: center.lat, lng: center.lng, source: 'NWS Warning', info: alert.properties?.event || 'Severe Storm' });
+              locations.push({ lat: center.lat + 0.15, lng: center.lng + 0.1, source: 'NWS Warning', info: alert.properties?.event || 'Severe Storm' });
+              locations.push({ lat: center.lat - 0.1, lng: center.lng - 0.15, source: 'NWS Warning', info: alert.properties?.event || 'Severe Storm' });
+            }
+          } catch (e) {}
+        }
+      });
+      return locations;
+    }
+
+    function renderLightningStrikes() {
+      lightningStrikeMarkers.forEach(m => { try { map1.removeLayer(m); } catch(e) {} });
+      lightningStrikeMarkers = [];
+      if (!lightningVisible) return;
+      const locations = buildLightningLocations();
+      if (locations.length === 0) {
+        logMessage("⚡ No thunderstorms detected by Open-Meteo and no active severe warnings. Lightning layer is clear.");
+        document.getElementById('storm-fx-status').textContent = '⚡ No active thunderstorms or severe warnings currently.';
+        return;
+      }
+      locations.forEach((loc, idx) => {
+        const icon = L.divIcon({
+          className: 'lightning-strike-marker',
+          html: `<div class="lightning-bolt" style="animation-delay:${(idx * 0.12).toFixed(2)}s"></div>`,
+          iconSize: [12, 56],
+          iconAnchor: [6, 28]
+        });
+        const marker = L.marker([loc.lat, loc.lng], {
+          icon, interactive: false, zIndexOffset: 600
+        }).addTo(map1);
+        marker.bindTooltip(`⚡ ${loc.source} — ${loc.info}`, { sticky: true, className: 'wind-tooltip' });
+        lightningStrikeMarkers.push(marker);
+      });
+      const omCount = thunderstormDataCache.length;
+      const nwsCount = locations.length - omCount;
+      logMessage(`⚡ ${lightningStrikeMarkers.length} lightning markers: ${omCount} from Open-Meteo + ${nwsCount} from NWS warnings.`);
+      document.getElementById('storm-fx-status').textContent = `⚡ ${lightningStrikeMarkers.length} strikes: ${omCount} Open-Meteo + ${nwsCount} NWS warnings.`;
+      setTimeout(() => playThunderRumble(), 400);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  TORNADO LOGO MARKERS (fixed — animation on child, not Leaflet container)
+    // ═══════════════════════════════════════════════════════════════
+    function renderTornadoLogos() {
+      // TORNADO button now shows CONFIRMED tornadoes only (SPC reports), not warnings
+      // NWS warning polygons are already shown by the main alert layer
+      renderConfirmedTornadoes();
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  CONFIRMED TORNADO REPORTS (SPC — actual tornadoes on the ground)
+    // ═══════════════════════════════════════════════════════════════
+    async function fetchConfirmedTornadoReports() {
+      const now = Date.now();
+      if (now - _lastTornadoReportFetch < 5 * 60 * 1000 && confirmedTornadoReports.length > 0) {
+        renderConfirmedTornadoes();
+        return;
+      }
+      _lastTornadoReportFetch = now;
+      logMessage("🌪️ FETCHING CONFIRMED TORNADO REPORTS FROM SPC...");
+      try {
+        const res = await fetch('/api/tornado-reports');
+        const payload = await res.json();
+        if (payload.ok && payload.reports) {
+          confirmedTornadoReports = payload.reports;
+          logMessage(`🌪️ SPC CONFIRMED TORNADOES: ${payload.count} reported today.`);
+          updateCompanion('scanning', `SPC shows ${payload.count} confirmed tornado report${payload.count===1?'':'s'} today.`);
+          updateConfirmedTornadoHUD(payload.count);
+          if (tornadoLogoVisible) renderConfirmedTornadoes();
+          if (payload.count > 0) {
+            playAlertSiren();
+            speakAlert(`${payload.count} confirmed tornado${payload.count===1?'':'es'} reported today.`);
+          }
+        }
+      } catch (e) {
+        logMessage(`🌪️ Tornado report fetch error: ${e.message}`);
+      }
+    }
+
+    function renderConfirmedTornadoes() {
+      confirmedTornadoMarkers.forEach(m => { try { map1.removeLayer(m); } catch(e) {} });
+      confirmedTornadoMarkers = [];
+      if (!confirmedTornadoVisible) return;
+      confirmedTornadoReports.forEach((rpt, idx) => {
+        const icon = L.divIcon({
+          className: 'confirmed-tornado-marker',
+          html: `<div class="confirmed-tornado-inner"><svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><defs><radialGradient id="ctr${idx}" cx="50%" cy="50%" r="50%"><stop offset="0%" style="stop-color:#FF00FF"/><stop offset="50%" style="stop-color:#FF1744"/><stop offset="100%" style="stop-color:#8B0000"/></radialGradient></defs><path d="M50 5 Q22 24 30 38 Q10 50 24 64 Q6 76 20 92 Q42 74 50 62 Q58 74 80 92 Q94 76 76 64 Q90 50 70 38 Q78 24 50 5Z" fill="url(#ctr${idx})" stroke="#FF00FF" stroke-width="3"/><circle cx="50" cy="30" r="10" fill="#FFF" opacity="0.9"/><circle cx="50" cy="30" r="4" fill="#FF00FF"/><text x="50" y="88" text-anchor="middle" fill="#FFF" font-size="14" font-weight="900" font-family="monospace">${rpt.f_scale || '?'}</text></svg></div>`,
+          iconSize: [56, 56],
+          iconAnchor: [28, 28]
+        });
+        const marker = L.marker([rpt.lat, rpt.lon], { icon, zIndexOffset: 1100 })
+          .bindTooltip(`🌪️ CONFIRMED TORNADO<br>EF Scale: ${rpt.f_scale || 'Unknown'}<br>Location: ${rpt.location || ''}, ${rpt.county || ''}, ${rpt.state || ''}<br>Time: ${rpt.time || ''}<br>${rpt.comments || ''}`, { sticky: true, className: 'wind-tooltip' })
+          .addTo(map1);
+        marker.on('click', () => openConfirmedTornadoDetail(rpt));
+        confirmedTornadoMarkers.push(marker);
+      });
+    }
+
+    function openConfirmedTornadoDetail(rpt) {
+      playModalOpen();
+      map1.flyTo([rpt.lat, rpt.lon], 10, { duration: 1.5 });
+      document.getElementById('modal-title').textContent = '🌪️ CONFIRMED TORNADO REPORT';
+      document.getElementById('modal-body').innerHTML = `
+        <div style="display:flex; flex-direction:column; gap:14px;">
+          <div style="background: linear-gradient(135deg, #FF00FF, #FF1744); border-radius:10px; padding:16px 18px;">
+            <div style="font-size:1.4em; font-weight:900; color:#fff; text-transform:uppercase; letter-spacing:0.5px;">CONFIRMED TORNADO</div>
+            <div style="font-size:0.9em; font-weight:800; color:rgba(255,255,255,0.9); margin-top:4px;">SPC Local Storm Report — ${rpt.state || 'US'}</div>
+          </div>
+          <div style="display:flex; gap:10px; flex-wrap:wrap;">
+            <div style="background:rgba(0,0,0,0.45); border:1px solid rgba(255,255,255,0.18); border-radius:8px; padding:10px 14px; min-width:120px;">
+              <div style="font-size:1.2em; font-weight:900; color:#FF00FF;">${rpt.f_scale || 'Unknown'}</div>
+              <div style="font-size:0.65em; font-weight:800; color:rgba(255,255,255,0.65); text-transform:uppercase;">EF Scale</div>
+            </div>
+            <div style="background:rgba(0,0,0,0.45); border:1px solid rgba(255,255,255,0.18); border-radius:8px; padding:10px 14px; min-width:120px;">
+              <div style="font-size:1.2em; font-weight:900; color:#fff;">${rpt.time || '—'}</div>
+              <div style="font-size:0.65em; font-weight:800; color:rgba(255,255,255,0.65); text-transform:uppercase;">Time (UTC)</div>
+            </div>
+            <div style="background:rgba(0,0,0,0.45); border:1px solid rgba(255,255,255,0.18); border-radius:8px; padding:10px 14px; min-width:120px;">
+              <div style="font-size:1.2em; font-weight:900; color:#fff;">${rpt.location || '—'}</div>
+              <div style="font-size:0.65em; font-weight:800; color:rgba(255,255,255,0.65); text-transform:uppercase;">Location</div>
+            </div>
+          </div>
+          <div style="font-size:0.85em; color:#ccc; line-height:1.5;"><b>County:</b> ${rpt.county || '—'}<br><b>Coordinates:</b> ${rpt.lat.toFixed(4)}, ${rpt.lon.toFixed(4)}<br><b>Comments:</b> ${rpt.comments || 'None'}</div>
+          <div style="font-size:0.7em; color:rgba(255,255,255,0.4);">Source: NOAA Storm Prediction Center — spc.noaa.gov/climo/reports</div>
+        </div>
+      `;
+      document.getElementById('detail-modal-overlay').style.display = 'flex';
+    }
+
+    function updateConfirmedTornadoHUD(count) {
+      const el = document.getElementById('hud-val-confirmed-tor');
+      if (el) {
+        el.innerText = count;
+        el.style.color = count > 0 ? '#FF00FF' : '#888';
+      }
+      const titleEl = document.getElementById('confirmed-tor-title');
+      if (titleEl) titleEl.innerText = `CONFIRMED TORNADOES (${count})`;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  TOGGLE FUNCTIONS
+    // ═══════════════════════════════════════════════════════════════
+    function toggleLightningLayer() {
+      lightningVisible = !lightningVisible;
+      playClickTick();
+      document.getElementById('lightning-toggle-btn').classList.toggle('active', lightningVisible);
+      if (lightningVisible) {
+        logMessage("⚡ Lightning ENABLED — fetching storm data...");
+        document.getElementById('storm-fx-status').textContent = '⚡ Fetching thunderstorm data...';
+        fetchThunderstormData().then(() => {
+          renderLightningStrikes();
+        }).catch(e => {
+          logMessage(`⚡ Lightning fetch failed: ${e.message}`);
+          renderLightningStrikes();
+        });
+      } else {
+        renderLightningStrikes();
+        document.getElementById('storm-fx-status').textContent = 'Storm FX: lightning + wind + tornado overlays.';
+        logMessage("⚡ Lightning DISABLED.");
+      }
+    }
+    function toggleWindLayer() {
+      windVisible = !windVisible;
+      playClickTick();
+      document.getElementById('wind-toggle-btn').classList.toggle('active', windVisible);
+      if (windVisible) {
+        if (windDataCache.length === 0) {
+          logMessage("💨 Wind barbs ENABLED — fetching data (wait 20-30s)...");
+          fetchWindData();
+        } else {
+          renderWindBarbs();
+          logMessage("💨 Wind barbs ENABLED — using cached data.");
+        }
+      } else {
+        renderWindBarbs();
+        logMessage("💨 Wind barbs DISABLED.");
+      }
+    }
+    function toggleTornadoLogoLayer() {
+      tornadoLogoVisible = !tornadoLogoVisible;
+      playClickTick();
+      document.getElementById('tornado-logo-toggle-btn').classList.toggle('active', tornadoLogoVisible);
+      if (tornadoLogoVisible) {
+        if (confirmedTornadoReports.length === 0) fetchConfirmedTornadoReports();
+        else renderConfirmedTornadoes();
+        logMessage("🌪️ TORNADO button: showing CONFIRMED tornado reports only.");
+      } else {
+        renderConfirmedTornadoes();
+        logMessage("🌪️ Tornado logos DISABLED.");
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  STORM WATCH: SPC Convective Outlooks
+    // ═══════════════════════════════════════════════════════════════
+    async function fetchSPCOutlooks(silent) {
+      if (!silent) { playClickTick(); logMessage("🔮 Fetching SPC outlooks..."); }
+      try {
+        const res = await fetch('/api/spc-outlook');
+        const payload = await res.json();
+        if (!payload.ok || !payload.outlooks) {
+          if (!silent) logMessage("❌ SPC outlook fetch failed.");
+          return;
+        }
+        _spcOutlookData = payload.outlooks;
+        _lastSPCFetch = Date.now();
+        renderStormWatch();
+        if (!silent) { logMessage("🔮 SPC outlooks loaded."); playSuccessChime(); }
+        checkStormRiskForAI();
+      } catch (e) {
+        if (!silent) logMessage(`❌ SPC error: ${e.message}`);
+      }
+    }
+
+    function renderStormWatch() {
+      if (!_spcOutlookData) return;
+      const box = document.getElementById('storm-watch-box');
+      let maxRiskLevel = 1, maxRiskDay = '', maxRiskCode = 'TSTM';
+      ['day1', 'day2', 'day3'].forEach((day, idx) => {
+        const data = _spcOutlookData[day];
+        const cell = document.getElementById(`sw-${day}`);
+        if (!data || !cell) return;
+        const code = data.max_risk || 'TSTM';
+        const level = SPC_RISK_LEVELS[code] || 1;
+        const color = SPC_RISK_COLORS[code] || '#7CFC00';
+        const name = SPC_RISK_NAMES[code] || code;
+        const pct = (level / 6) * 100;
+        cell.querySelector('.sw-risk-val').textContent = name.toUpperCase();
+        cell.querySelector('.sw-risk-val').style.color = color;
+        cell.querySelector('.sw-risk-bar-fill').style.width = pct + '%';
+        cell.querySelector('.sw-risk-bar-fill').style.background = color;
+        cell.classList.toggle('active', level >= 3);
+        if (level > maxRiskLevel) { maxRiskLevel = level; maxRiskDay = ['TODAY','TOMORROW','DAY 3'][idx]; maxRiskCode = code; }
+      });
+      const summaryEl = document.getElementById('sw-summary');
+      if (maxRiskLevel >= 5) {
+        box.className = 'storm-active';
+        summaryEl.innerHTML = `<b style="color:#FF1744;">🚨 CRITICAL:</b> ${maxRiskDay} has <b style="color:${SPC_RISK_COLORS[maxRiskCode]}">${SPC_RISK_NAMES[maxRiskCode].toUpperCase()}</b> risk. Stay alert for tornado warnings.`;
+      } else if (maxRiskLevel >= 3) {
+        box.className = 'storm-elevated';
+        summaryEl.innerHTML = `<b style="color:#FFA500;">⚠️ ELEVATED:</b> ${maxRiskDay} shows <b style="color:${SPC_RISK_COLORS[maxRiskCode]}">${SPC_RISK_NAMES[maxRiskCode].toUpperCase()}</b> severe potential.`;
+      } else {
+        box.className = '';
+        summaryEl.innerHTML = `🟢 Low severe weather risk all days. Outlooks current as of ${new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}.`;
+      }
+    }
+
+    function checkStormRiskForAI() {
+      if (!_spcOutlookData) return;
+      const day1 = _spcOutlookData.day1;
+      if (!day1) return;
+      const code = day1.max_risk || 'TSTM';
+      const level = SPC_RISK_LEVELS[code] || 1;
+      const name = SPC_RISK_NAMES[code] || code;
+      if (level >= 5) {
+        playAlertSiren();
+        speakAlert(`Storm Prediction Center: ${name} risk for severe weather today.`);
+        updateCompanion('alert', `SPC says ${name} risk TODAY. Have your shelter plan ready.`);
+        logMessage(`🚨 SPC ${name.toUpperCase()} RISK TODAY — AI ALERTED.`);
+      } else if (level >= 3) {
+        playWarningTone();
+        updateCompanion('scanning', `SPC shows ${name} risk today. Watching radar extra close.`);
+        logMessage(`⚠️ SPC ${name.toUpperCase()} RISK TODAY — monitoring intensified.`);
+      }
+    }
+
+    function getStormOutlookPhrase() {
+      if (!_spcOutlookData) return null;
+      const d1 = _spcOutlookData.day1; const d2 = _spcOutlookData.day2;
+      if (!d1 || !d2) return null;
+      const l1 = SPC_RISK_LEVELS[d1.max_risk] || 1;
+      const l2 = SPC_RISK_LEVELS[d2.max_risk] || 1;
+      if (l1 >= 5) return `SPC has ${SPC_RISK_NAMES[d1.max_risk]} risk TODAY. This is serious — tornadoes possible.`;
+      if (l1 >= 3) return `SPC shows ${SPC_RISK_NAMES[d1.max_risk]} risk today. I'll flag warnings the moment they drop.`;
+      if (l2 >= 4) return `Tomorrow looks rough — SPC has ${SPC_RISK_NAMES[d2.max_risk]} risk posted.`;
+      if (l2 >= 3) return `SPC shows ${SPC_RISK_NAMES[d2.max_risk]} risk for tomorrow. Atmosphere is organizing.`;
+      return null;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  DTE FRONTEND FALLBACK (fetches PowerOutage.us directly)
+    // ═══════════════════════════════════════════════════════════════
+    async function fetchPowerOutageUSFallback() {
+      try {
+        logMessage("⚡ Trying PowerOutage.us frontend fallback...");
+        const res = await fetch('https://poweroutage.us/api/state/michigan', {
+          headers: { 'Accept': 'application/json' }
+        });
+        const data = await res.json();
+        const utilities = data.Utilities || data.utilities || [];
+        for (const u of utilities) {
+          const name = (u.Name || u.name || '').toLowerCase();
+          if (name.includes('dte')) {
+            const custOut = u.CustomersOut || u.customers_out || 0;
+            const totalCust = u.TotalCustomers || u.total_customers || 0;
+            const lastUpd = u.LastUpdated || u.last_updated || '';
+            const geojson = {
+              "type": "FeatureCollection",
+              "features": [{
+                "type": "Feature",
+                "properties": {
+                  "customers_out": custOut, "total_customers": totalCust,
+                  "last_updated": lastUpd, "source": "PowerOutage.us (frontend fallback)",
+                  "is_count_fallback": True,
+                },
+                "geometry": { "type": "Point", "coordinates": [-83.0458, 42.3314] }
+              }]
+            };
+            lastOutageGeojson = geojson;
+            lastOutageAreaCount = custOut > 0 ? 1 : 0;
+            lastOutageFetchOk = true;
+            document.getElementById('hud-val-outages').innerText = custOut > 0 ? '1+' : '0';
+            document.getElementById('outage-status-line').textContent =
+              `⚡ DTE direct blocked. PowerOutage.us: ${custOut.toLocaleString()} customers out. Last: ${lastUpd || 'unknown'}.`;
+            logMessage(`✅ PowerOutage.us fallback: ${custOut.toLocaleString()} customers out.`);
+            playSuccessChime();
+            return true;
+          }
+        }
+        return false;
+      } catch (e) {
+        logMessage(`❌ PowerOutage.us fallback failed: ${e.message}`);
+        return false;
+      }
+    }
+
+    function initBroadcast() {
+      document.getElementById('start-overlay').style.display = 'none';
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      playSynapseBeep();
+      playBootSequence();
+      logMessage("SYNAPSE AI OPERATIONAL.");
+      updateCompanion('idle', 'Kernel online. Linking to NEXRAD radar, live wind data, and NWS alerts now.');
+
+      setInterval(() => {
+        document.getElementById('top-clock').innerText = new Date().toLocaleTimeString('en-US', { hour12: true }) + ' ET';
+      }, 1000);
+
+      initMaps();
+      fetchLiveNWSAlerts();
+      scanAreaForCameras();
+      fetchPowerOutages(true);
+      fetchSPCOutlooks(true);
+      setTimeout(() => { if (windDataCache.length === 0) fetchWindData(); }, 3000);
+      setTimeout(() => fetchConfirmedTornadoReports(), 5000);
+      setInterval(fetchLiveNWSAlerts, 30000);
+      // Free-tier Windy image tokens expire after ~10 min, so re-scan
+      // periodically to keep thumbnails from going stale/broken.
+      setInterval(() => scanAreaForCameras(true), 4 * 60 * 1000);
+      // DTE's own service says it updates ~every 15 min; poll a bit faster.
+      setInterval(() => fetchPowerOutages(true), 5 * 60 * 1000);
+      setInterval(idleCompanionChatter, 45000);
+      setInterval(() => { if (windVisible) fetchWindData(); }, 10 * 60 * 1000);
+      setInterval(() => { if (!document.hidden) playRadarPing(); }, 30000);
+      setInterval(() => fetchSPCOutlooks(true), 15 * 60 * 1000);
+    }
+
+    function initMaps() {
+      map1 = L.map('map1', { zoomControl: false, preferCanvas: true }).setView([38.50, -96.00], 5);
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map1);
+
+      map2 = L.map('map2', { zoomControl: false, preferCanvas: true }).setView([38.50, -96.00], 5);
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map2);
+
+      loadRadarLayer(map1);
+    }
+
+    function loadRadarLayer(targetMap) {
+      L.tileLayer.wms('https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi', {
+        layers: 'nexrad-n0q-900913', format: 'image/png', transparent: true, opacity: 0.75
+      }).addTo(targetMap);
+    }
+
+    // SCAN AREA FUNCTION: PULLS REAL CAMERAS FROM /api/webcams (Windy Webcams
+    // API, real precise coordinates) AND RENDERS THEM ON MAP & IN LEFT PANEL
+    async function scanAreaForCameras(silent) {
+      if (!silent) {
+        playClickTick();
+        logMessage("🔍 SCANNING FOR REAL WEBCAMS (Windy Webcams API)...");
+        updateCompanion('scanning', "Scanning the webcam network for live public feeds across the grid...");
+      }
+
+      let payload;
+      try {
+        const res = await fetch('/api/webcams');
+        payload = await res.json();
+      } catch (e) {
+        if (!silent) { logMessage("❌ Could not reach local camera API (/api/webcams). Is app.py running?"); playErrorBuzz(); }
+        return;
+      }
+      lastCamScanTimestamp = Date.now();
+
+      if (!payload.configured) {
+        document.getElementById('cam-grid').innerHTML = `
+          <div style="grid-column: span 2; text-align:center; color:#FDE047; font-size:0.68em; padding:16px; line-height:1.5;">
+            ⚠️ NO WINDY API KEY SET.<br>Get a free key at api.windy.com/keys and paste it into WINDY_API_KEY in app.py to load real cameras.
+          </div>`;
+        document.getElementById('cam-count').textContent = '(0)';
+        logMessage("⚠️ WINDY_API_KEY not configured in app.py — no real cameras to load.");
+        updateCompanion('idle', "I can't reach the webcam network yet — no API key is configured in app.py.");
+        return;
+      }
+
+      regionalCameraDatabase = payload.cameras || [];
+      document.getElementById('cam-count').textContent = `(${regionalCameraDatabase.length})`;
+      const liveCount = regionalCameraDatabase.filter(c => c.is_live).length;
+      document.getElementById('cam-live-count').textContent = liveCount ? `🔴 ${liveCount} LIVE` : '';
+
+      renderCameraGrid();
+
+      // Add corresponding markers onto map1 at REAL precise coordinates
+      activeCameraMarkers.forEach(m => map1.removeLayer(m));
+      activeCameraMarkers = [];
+      regionalCameraDatabase.forEach((c, index) => {
+        const camIcon = L.divIcon({
+          className: 'custom-cam-marker',
+          html: `<div style="background:${c.is_live ? '#FF3B3B' : '#00ffcc'}; border:2px solid #000; width:12px; height:12px; border-radius:50%; box-shadow:0 0 8px ${c.is_live ? '#FF3B3B' : '#00ffcc'}; cursor:pointer;" title="${c.name}"></div>`,
+          iconSize: [12, 12]
+        });
+        const marker = L.marker([c.lat, c.lng], { icon: camIcon }).addTo(map1);
+        const locLine = [c.city, c.region, c.country].filter(Boolean).join(', ');
+        marker.bindPopup(`<b>${c.is_live ? '🔴 LIVE' : '📹'} ${c.name}</b><br>${locLine}<br><button onclick="openCameraDetail(${index})" style="margin-top:6px; background:#00ffcc; color:#000; border:none; padding:4px 8px; font-weight:900; cursor:pointer;">EXPAND FEED</button>`);
+        activeCameraMarkers.push(marker);
+      });
+
+      if (!silent) {
+        logMessage(`✅ AREA SCAN COMPLETE: ${regionalCameraDatabase.length} cameras locked & mapped (${liveCount} true live streams).`);
+        playSuccessChime();
+        playScanLock();
+        updateCompanion('idle', liveCount
+          ? `Locked onto ${regionalCameraDatabase.length} cameras, ${liveCount} of them true live streams. Standing by.`
+          : regionalCameraDatabase.length
+            ? `Locked onto ${regionalCameraDatabase.length} cameras, but none of them are true live streams right now — still images only.`
+            : "No cameras found in coverage right now. Standing by.");
+      } else {
+        logMessage(`↻ Camera thumbnails refreshed (${regionalCameraDatabase.length}, ${liveCount} live).`);
+      }
+    }
+
+    let liveOnlyFilter = false;
+    function toggleLiveOnlyFilter() {
+      playClickTick();
+      liveOnlyFilter = !liveOnlyFilter;
+      document.getElementById('live-only-toggle-btn').classList.toggle('active', liveOnlyFilter);
+      renderCameraGrid();
+    }
+
+    function renderCameraGrid() {
+      const grid = document.getElementById('cam-grid');
+      const list = liveOnlyFilter ? regionalCameraDatabase.filter(c => c.is_live) : regionalCameraDatabase;
+      if (list.length === 0) {
+        grid.innerHTML = `<div style="grid-column: span 2; text-align:center; color:#88ffee; font-size:0.7em; padding:20px;">${
+          liveOnlyFilter ? 'NO TRUE LIVE-STREAM CAMERAS IN THIS SCAN. TURN OFF "LIVE ONLY" TO SEE STILL-IMAGE CAMS.' : 'NO CAMERAS FOUND IN COVERAGE AREA.'
+        }</div>`;
+        return;
+      }
+      grid.innerHTML = list.map((c) => {
+        const index = regionalCameraDatabase.indexOf(c);
+        return `
+          <div class="cam-box ${c.is_live ? 'is-live' : ''}" onclick="openCameraDetail(${index})">
+            <img src="${c.thumbnail}${c.thumbnail.includes('?') ? '&' : '?'}_ts=${lastCamScanTimestamp}" alt="${c.name}" loading="lazy" onerror="this.style.opacity=0.2">
+            ${c.is_live ? '<div class="cam-live-badge">🔴 LIVE</div>' : `<div class="cam-refresh-badge">↻ ${new Date(lastCamScanTimestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>`}
+            <div class="cam-label">${c.is_live ? '🔴' : '📹'} ${c.name.toUpperCase()}</div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function openCameraDetail(index) {
+      playModalOpen();
+      const c = regionalCameraDatabase[index];
+      if (!c) return;
+      const locLine = [c.city, c.region, c.country].filter(Boolean).join(', ');
+      document.getElementById('modal-title').textContent = `${c.is_live ? '🔴 LIVE FEED' : '📹 CAMERA'}: ${c.name.toUpperCase()}`;
+
+      let mediaHtml;
+      if (c.is_live && c.live_embed) {
+        // True live video stream -- embed Windy's own live iframe player.
+        mediaHtml = `
+          <iframe src="${c.live_embed}" style="width:100%; height:360px; border:2px solid #FF3B3B; border-radius:4px;" allowfullscreen loading="lazy"></iframe>
+          <div style="font-size: 1.1em; font-weight: 900; color: #FF3B3B;">🔴 STATUS: TRUE LIVE VIDEO STREAM (Windy Webcams API)</div>
+        `;
+      } else {
+        mediaHtml = `
+          <img src="${c.thumbnail}${c.thumbnail.includes('?') ? '&' : '?'}_ts=${Date.now()}" style="width:100%; max-height:450px; object-fit:cover; border:2px solid #00ffcc; border-radius:4px;" onerror="this.style.opacity=0.2">
+          <div style="font-size: 1.1em; font-weight: 900; color: #ffea00;">STATUS: STILL IMAGE ONLY — NOT LIVE VIDEO</div>
+          <div style="font-size:0.8em; color:#aaa;">This camera doesn't offer a true live video stream through the Windy API. This image refreshes automatically every ~4 minutes.</div>
+        `;
+      }
+
+      document.getElementById('modal-body').innerHTML = `
+        <div style="display: flex; flex-direction: column; gap: 12px;">
+          ${mediaHtml}
+          <div><b>Location:</b> ${locLine || 'Unknown'}</div>
+          <div><b>Coordinates:</b> ${c.lat.toFixed(4)}, ${c.lng.toFixed(4)}</div>
+          ${c.player_url ? `<a href="${c.player_url}" target="_blank" style="color:#00ffcc;">▶ Open this camera's own player page ↗</a>` : ''}
+        </div>
+      `;
+      document.getElementById('detail-modal-overlay').style.display = 'flex';
+    }
+
+    // ---- POWER OUTAGES (DTE Energy, SE Michigan) -----------------------
+    function renderOutageOfficialLinks(links) {
+      const el = document.getElementById('outage-official-links');
+      if (!links || !links.length) { el.innerHTML = ''; return; }
+      el.innerHTML = 'Official sources: ' + links.map(l =>
+        `<a href="${l.url}" target="_blank" style="color:#00ffcc;">${l.label} ↗</a>`
+      ).join(' &nbsp;•&nbsp; ');
+    }
+
+    async function fetchPowerOutages(silent) {
+      if (!silent) logMessage("⚡ PULLING LIVE OUTAGE MAP (DTE Energy)...");
+      let payload;
+      try {
+        const res = await fetch('/api/outages');
+        payload = await res.json();
+      } catch (e) {
+        document.getElementById('outage-status-line').textContent = '❌ Could not reach local outage API. Is app.py running?';
+        lastOutageFetchOk = false;
+        return;
+      }
+
+      renderOutageOfficialLinks(payload.official_links);
+
+      if (!payload.ok || !payload.geojson) {
+        const diag = payload.diagnostic || {};
+        let reason;
+        if (diag.connectivity_ok === false) {
+          reason = "DTE's gateway is blocking this feed right now (connectivity check also failed) — this is a known risk with this unofficial feed, not a bug here.";
+        } else if (payload.error) {
+          reason = payload.error;
+        } else {
+          reason = "unknown error";
+        }
+        // Try frontend fallback to PowerOutage.us
+        const fallbackOk = await fetchPowerOutageUSFallback();
+        if (fallbackOk) return;
+        document.getElementById('outage-status-line').textContent = `⚠️ DTE outage feed unavailable: ${reason} Use the official link below instead.`;
+        document.getElementById('hud-val-outages').innerText = '--';
+        lastOutageFetchOk = false;
+        lastOutageAreaCount = null;
+        if (!silent) { logMessage(`❌ Outage map fetch failed: ${reason}`); playErrorBuzz(); }
+        return;
+      }
+
+      lastOutageFetchOk = true;
+      const features = payload.geojson.features || [];
+      lastOutageAreaCount = features.length;
+      lastOutageGeojson = payload.geojson;
+      const diag = payload.diagnostic || {};
+      lastOutageFetchMethod = diag.method || null;
+      document.getElementById('hud-val-outages').innerText = features.length;
+      const zeroButConnected = features.length === 0 && diag.connectivity_ok === true;
+      const methodNote = diag.method === 'browser_fallback' ? ' (via headless-browser fallback — direct feed is currently bot-blocked)' : '';
+      const isCountFallback = features.length === 1 && features[0]?.properties?.is_count_fallback;
+      if (isCountFallback) {
+        const props = features[0].properties;
+        document.getElementById('outage-status-line').textContent =
+          `⚡ DTE direct blocked. PowerOutage.us: ${props.customers_out?.toLocaleString() || '?'} customers out. Last: ${props.last_updated || 'unknown'}.`;
+      } else {
+        document.getElementById('outage-status-line').textContent = zeroButConnected
+          ? `${payload.source} — connected OK, 0 active outage areas reported right now.${methodNote}`
+          : `${payload.source} — ${features.length} outage area${features.length === 1 ? '' : 's'} reported, updates ~every 15 min.${methodNote}`;
+      }
+
+      if (outageLayer) { map1.removeLayer(outageLayer); outageLayer = null; }
+      outageLayer = L.geoJSON(payload.geojson, {
+        style: { color: '#FFA500', weight: 2, fillColor: '#FF4500', fillOpacity: 0.35 },
+        onEachFeature: (feature, layer) => {
+          layer.bindTooltip('⚡ Outage area — click for details', { sticky: true });
+          layer.on('click', () => openOutageDetail(feature));
+        }
+      });
+      if (outageVisible) outageLayer.addTo(map1);
+      if (!silent) {
+        logMessage(`✅ Outage map updated: ${features.length} area(s).`);
+        playSuccessChime();
+        if (features.length > 0) playOutageAlert();
+      }    }
+
+    // Click on an outage polygon: styled stat-card popup (customers out,
+    // cause, status, etc.) instead of a plain tooltip dump. DTE's ArcGIS
+    // schema for OutageAreas isn't publicly documented, so this looks for
+    // common field-name patterns rather than hardcoding exact DTE field
+    // names -- if a future schema change adds/renames fields, this keeps
+    // working instead of silently breaking, and unmatched fields still get
+    // listed below so nothing is ever hidden.
+    function openOutageDetail(feature) {
+      playModalOpen();
+      flyToFeature(feature);
+      const props = feature.properties || {};
+      if (props.is_count_fallback) {
+        document.getElementById('modal-title').textContent = '⚡ DTE OUTAGE (COUNT-ONLY FALLBACK)';
+        document.getElementById('modal-body').innerHTML = `
+          <div style="display:flex; flex-direction:column; gap:14px;">
+            <div style="background: linear-gradient(135deg, #FF8C00, #FF3B00); border-radius:10px; padding:16px 18px;">
+              <div style="font-size:1.3em; font-weight:900; color:#fff; text-transform:uppercase;">DTE ENERGY — SE MICHIGAN</div>
+              <div style="font-size:0.8em; font-weight:800; color:rgba(255,255,255,0.9); margin-top:4px;">PowerOutage.us Fallback</div>
+            </div>
+            <div style="display:flex; gap:10px; flex-wrap:wrap;">
+              <div style="background:rgba(0,0,0,0.45); border:1px solid rgba(255,255,255,0.18); border-radius:8px; padding:10px 14px; min-width:120px;">
+                <div style="font-size:1.1em; font-weight:900; color:#fff;">👥 ${props.customers_out?.toLocaleString() || '—'}</div>
+                <div style="font-size:0.65em; font-weight:800; color:rgba(255,255,255,0.65); text-transform:uppercase;">Customers Out</div>
+              </div>
+              <div style="background:rgba(0,0,0,0.45); border:1px solid rgba(255,255,255,0.18); border-radius:8px; padding:10px 14px; min-width:120px;">
+                <div style="font-size:1.1em; font-weight:900; color:#fff;">📊 ${props.total_customers?.toLocaleString() || '—'}</div>
+                <div style="font-size:0.65em; font-weight:800; color:rgba(255,255,255,0.65); text-transform:uppercase;">Total Customers</div>
+              </div>
+              <div style="background:rgba(0,0,0,0.45); border:1px solid rgba(255,255,255,0.18); border-radius:8px; padding:10px 14px; min-width:120px;">
+                <div style="font-size:1.1em; font-weight:900; color:#fff;">🕒 ${props.last_updated || '—'}</div>
+                <div style="font-size:0.65em; font-weight:800; color:rgba(255,255,255,0.65); text-transform:uppercase;">Last Updated</div>
+              </div>
+            </div>
+            <div style="font-size:0.75em; color:#FDE047;">⚠️ DTE's ArcGIS feed is bot-blocked. This data comes from PowerOutage.us — exact outage polygons are unavailable.</div>
+            <div style="font-size:0.7em; color:rgba(255,255,255,0.4);">Source: PowerOutage.us API</div>
+          </div>
+        `;
+        document.getElementById('detail-modal-overlay').style.display = 'flex';
+        return;
+      }
+      const entries = Object.entries(props).filter(([k, v]) => v !== null && v !== '' && v !== undefined);
+
+      const findProp = (patterns) => {
+        for (const pat of patterns) {
+          const hit = entries.find(([k]) => k.toLowerCase().includes(pat));
+          if (hit) return hit;
+        }
+        return null;
+      };
+
+      const custHit = findProp(['custout', 'numcust', 'customer']);
+      const causeHit = findProp(['cause']);
+      const statusHit = findProp(['status']);
+      const etaHit = findProp(['restore', 'eta']);
+      const countyHit = findProp(['county', 'municipal']);
+      const startHit = findProp(['start', 'report']);
+
+      const usedKeys = new Set([custHit, causeHit, statusHit, etaHit, countyHit, startHit]
+        .filter(Boolean).map(([k]) => k));
+      const otherEntries = entries.filter(([k]) => !usedKeys.has(k));
+
+      const fmtVal = (hit) => hit ? hit[1] : null;
+      const fmtDate = (hit) => {
+        if (!hit) return null;
+        const d = new Date(hit[1]);
+        return isNaN(d.getTime()) ? String(hit[1]) : d.toLocaleString();
+      };
+
+      const pill = (icon, value, label) => `
+        <div style="background:rgba(0,0,0,0.45); border:1px solid rgba(255,255,255,0.18); border-radius:8px; padding:10px 14px; display:flex; flex-direction:column; gap:2px; min-width:120px;">
+          <div style="font-size:1.1em; font-weight:900; color:#fff;">${icon} ${value ?? '—'}</div>
+          <div style="font-size:0.65em; font-weight:800; letter-spacing:0.5px; color:rgba(255,255,255,0.65); text-transform:uppercase;">${label}</div>
+        </div>
+      `;
+
+      document.getElementById('modal-title').textContent = '⚡ POWER OUTAGE';
+      document.getElementById('modal-body').innerHTML = `
+        <div style="display:flex; flex-direction:column; gap:14px;">
+          <div style="background: linear-gradient(135deg, #FF8C00, #FF3B00); border-radius:10px; padding:16px 18px;">
+            <div style="font-size:1.3em; font-weight:900; color:#fff; text-transform:uppercase; letter-spacing:0.5px;">
+              ${fmtVal(causeHit) || 'DTE Outage Area'}
+            </div>
+            <div style="font-size:0.8em; font-weight:800; color:rgba(255,255,255,0.9); margin-top:4px; letter-spacing:0.5px;">
+              ${statusHit ? `STATUS: ${String(fmtVal(statusHit)).toUpperCase()}` : 'DTE ENERGY — SE MICHIGAN'}
+              ${startHit ? ` &nbsp;·&nbsp; REPORTED ${fmtDate(startHit)}` : ''}
+            </div>
+          </div>
+
+          <div style="display:flex; gap:10px; flex-wrap:wrap;">
+            ${pill('👥', fmtVal(custHit), 'Customers Out')}
+            ${pill('🕒', etaHit ? fmtDate(etaHit) : null, 'Est. Restoration')}
+            ${pill('📍', fmtVal(countyHit), 'County / Area')}
+          </div>
+
+          ${otherEntries.length ? `
+            <div style="border-top:1px solid rgba(255,255,255,0.12); padding-top:10px;">
+              <div style="font-size:0.65em; font-weight:800; letter-spacing:0.5px; color:rgba(255,255,255,0.45); text-transform:uppercase; margin-bottom:6px;">Other reported fields</div>
+              <div style="font-size:0.8em; color:rgba(255,255,255,0.75); line-height:1.6;">
+                ${otherEntries.map(([k, v]) => `<b>${k}:</b> ${v}`).join('<br>')}
+              </div>
+            </div>
+          ` : ''}
+
+          <div style="font-size:0.7em; color:rgba(255,255,255,0.4);">Source: DTE Energy outage map (unofficial feed) — field names inferred, not guaranteed by DTE.</div>
+        </div>
+      `;
+      document.getElementById('detail-modal-overlay').style.display = 'flex';
+    }
+
+    // Embeds DTE's own official outage map page directly in the app modal.
+    // This is a last-resort but reliable path: it's DTE's real, live page --
+    // no scraping, so it can't get bot-blocked the way the custom overlay
+    // can. Trade-off: it's their UI (not your SYNAPSE-styled overlay), and
+    // a small number of sites explicitly forbid iframing (X-Frame-Options /
+    // CSP frame-ancestors) -- if that's the case here, the frame will show
+    // blank and you should just use the "official links" instead.
+    function openOfficialMapEmbed() {
+      playModalOpen();
+      document.getElementById('modal-title').textContent = '🗺️ DTE OFFICIAL OUTAGE MAP (LIVE, EMBEDDED)';
+      document.getElementById('modal-body').innerHTML = `
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          <div style="font-size:0.75em; color:rgba(255,255,255,0.55);">
+            This is DTE's own live map, loaded directly from outage.dteenergy.com — real-time, official data.
+            If this area stays blank, DTE's site is blocking embedding and you should use the external link instead.
+          </div>
+          <iframe src="https://outage.dteenergy.com/map" style="width:100%; height:65vh; border:1px solid #FFA500; border-radius:6px; background:#111;"></iframe>
+          <a href="https://outage.dteenergy.com/map" target="_blank" style="color:#00ffcc; font-size:0.8em;">↗ Open in your default browser instead</a>
+        </div>
+      `;
+      document.getElementById('detail-modal-overlay').style.display = 'flex';
+    }
+
+    function toggleOutageLayer() {
+      outageVisible = !outageVisible;
+      playClickTick();
+      const btn = document.getElementById('outage-toggle-btn');
+      btn.textContent = outageVisible ? 'HIDE' : 'SHOW';
+      btn.classList.toggle('active', outageVisible);
+      if (outageVisible) {
+        if (!outageLayer) { fetchPowerOutages(); return; }
+        outageLayer.addTo(map1);
+        if (lastOutageGeojson?.features?.[0]?.properties?.is_count_fallback) {
+          map1.flyTo([42.3314, -83.0458], 9, { duration: 1.5 });
+        }
+      } else if (outageLayer) {
+        map1.removeLayer(outageLayer);
+      }
+    }
+
+    // ---- ANALYZE THIS VIEW (AI button) ---------------------------------
+    // NOTE: same honesty rule as the SYNAPSE companion -- this is not a
+    // generative/live AI call. It's a real-time computation over the actual
+    // data already on screen (outage polygons, cameras, warnings), scoped
+    // to whatever the map is currently looking at, then phrased through the
+    // same companion voice. No API key, no network call, works instantly.
+    function analyzeCurrentView() {
+      playClickTick();
+      const bounds = map1.getBounds();
+
+      // Outage areas whose shape intersects the current viewport.
+      let outagesInView = 0;
+      let outageDataAvailable = lastOutageGeojson !== null;
+      let isCountFallback = false;
+      if (outageDataAvailable) {
+        try {
+          const tempLayer = L.geoJSON(lastOutageGeojson);
+          tempLayer.eachLayer(layer => {
+            if (layer.getBounds && bounds.intersects(layer.getBounds())) {
+              outagesInView++;
+            }
+          });
+          const firstFeat = lastOutageGeojson.features?.[0];
+          if (firstFeat?.properties?.is_count_fallback) {
+            isCountFallback = true;
+            outagesInView = firstFeat.properties.customers_out > 0 ? 1 : 0;
+          }
+        } catch (e) {
+          outageDataAvailable = false;
+        }
+      }
+
+      // Cameras currently visible on the map.
+      const camsInView = activeCameraMarkers.filter(m => bounds.contains(m.getLatLng())).length;
+      const liveCamsInView = regionalCameraDatabase.filter((c, i) =>
+        c.is_live && activeCameraMarkers[i] && bounds.contains(activeCameraMarkers[i].getLatLng())
+      ).length;
+
+      // Active NWS warnings whose polygon intersects the current viewport.
+      let warningsInView = 0;
+      cachedAlertsFeatures.forEach(f => {
+        try {
+          const b = L.geoJSON(f).getBounds();
+          if (b.isValid() && bounds.intersects(b)) warningsInView++;
+        } catch (e) { /* skip malformed geometry */ }
+      });
+
+      // Build the spoken summary.
+      let lines = [];
+      if (!outageDataAvailable) {
+        lines.push("No outage data loaded yet — hit SHOW under POWER OUTAGES first.");
+      } else if (isCountFallback) {
+        const custOut = lastOutageGeojson.features?.[0]?.properties?.customers_out || 0;
+        lines.push(`DTE direct blocked. PowerOutage.us shows ${custOut.toLocaleString()} customers out statewide.`);
+      } else if (outagesInView === 0) {
+        lines.push("Zero DTE outage areas in the current view.");
+      } else {
+        lines.push(`${outagesInView} DTE outage area${outagesInView === 1 ? '' : 's'} visible in this view.`);
+      }
+      if (lastOutageFetchMethod === 'browser_fallback') {
+        lines.push("(Direct feed is bot-blocked — this used the browser fallback, so treat it as best-effort.)");
+      }
+      lines.push(`${camsInView} camera${camsInView === 1 ? '' : 's'} in view (${liveCamsInView} true live stream${liveCamsInView === 1 ? '' : 's'}).`);
+      lines.push(warningsInView === 0
+        ? "No active NWS warnings in this area."
+        : `${warningsInView} active NWS warning${warningsInView === 1 ? '' : 's'} overlapping this view.`);
+
+      const summary = lines.join(' ');
+      updateCompanion(outagesInView > 0 ? 'scanning' : 'idle', summary);
+      logMessage(`🤖 VIEW ANALYSIS: ${summary}`);
+      if (warningsInView > 0 || outagesInView > 0) playWarningTone(); else playSuccessChime();
+    }
+
+    // OPEN FULL DETAILS WHEN CLICKING THE HUD BOX
+    function openFullHUDDetails() {
+      playModalOpen();
+      document.getElementById('modal-title').textContent = `🚨 SYNAPSE TACTICAL WARNING DETAILS`;
+      
+      let html = `<div style="display: flex; flex-direction: column; gap: 10px;">`;
+      if (cachedAlertsFeatures.length === 0) {
+        html += `<div style="color: #00ffcc;">🟢 No active severe warnings in the current grid. All sectors secure.</div>`;
+      } else {
+        cachedAlertsFeatures.forEach((alert, idx) => {
+          const props = alert.properties;
+          html += `
+            <div onclick="closeModal(); openAlertDetail(cachedAlertsFeatures[${idx}]);" style="cursor:pointer; background: rgba(0,0,0,0.8); border: 1px solid #FF1744; padding: 10px; border-radius: 4px; transition: all 0.2s;" onmouseover="this.style.borderColor='#00ffcc'" onmouseout="this.style.borderColor='#FF1744'">
+              <div style="font-weight: 900; font-size: 1.1em; color: #FF1744;">🚨 ${props.event} <span style="float:right; font-size:0.6em; color:#00ffcc;">CLICK TO LOCATE ▸</span></div>
+              <div style="font-size: 0.8em; color: #FDE047; margin-top: 4px;"><b>Area:</b> ${props.areaDesc}</div>
+              <div style="font-size: 0.8em; margin-top: 6px;">${props.description || props.headline}</div>
+            </div>
+          `;
+        });
+      }
+      html += `</div>`;
+
+      document.getElementById('modal-body').innerHTML = html;
+      document.getElementById('detail-modal-overlay').style.display = 'flex';
+    }
+
+    function closeModal() {
+      playModalClose();
+      document.getElementById('detail-modal-overlay').style.display = 'none';
+    }
+
+    // Fly the map to a specific NWS alert polygon's location
+    function flyToFeature(feature) {
+      if (!feature) return;
+      try {
+        const bounds = L.geoJSON(feature).getBounds();
+        if (bounds.isValid()) {
+          map1.flyToBounds(bounds, { maxZoom: 9, duration: 1.5, padding: [40, 40] });
+        }
+      } catch (e) {
+        logMessage("⚠️ Could not fly to warning location.");
+      }
+    }
+
+    // Click a warning shape on the map (or "VIEW WARNING") to see full details
+    function openAlertDetail(feature) {
+      if (!feature) return;
+      playModalOpen();
+      flyToFeature(feature);
+      const props = feature.properties;
+      document.getElementById('modal-title').textContent = `🚨 ${props.event.toUpperCase()}`;
+      document.getElementById('modal-body').innerHTML = `
+        <div style="display:flex; flex-direction:column; gap:10px;">
+          <div style="background: rgba(0,0,0,0.8); border: 1px solid #FF1744; padding: 12px; border-radius: 4px;">
+            <div style="font-size:0.85em; color:#FDE047;"><b>Area:</b> ${props.areaDesc || 'N/A'}</div>
+            <div style="font-size:0.85em; color:#FDE047; margin-top:4px;"><b>Severity:</b> ${props.severity || 'N/A'} &nbsp; <b>Urgency:</b> ${props.urgency || 'N/A'} &nbsp; <b>Certainty:</b> ${props.certainty || 'N/A'}</div>
+            <div style="font-size:0.85em; color:#FDE047; margin-top:4px;"><b>Effective:</b> ${props.effective ? new Date(props.effective).toLocaleString() : 'N/A'}</div>
+            <div style="font-size:0.85em; color:#FDE047; margin-top:4px;"><b>Expires:</b> ${props.expires ? new Date(props.expires).toLocaleString() : 'N/A'}</div>
+            <div style="font-size:0.9em; margin-top:10px; white-space:pre-wrap;">${props.description || props.headline || 'No additional description provided.'}</div>
+            ${props.instruction ? `<div style="font-size:0.9em; margin-top:10px; color:#00ffcc;"><b>Instructions:</b><br>${props.instruction}</div>` : ''}
+          </div>
+        </div>
+      `;
+      document.getElementById('detail-modal-overlay').style.display = 'flex';
+    }
+
+    // "VIEW WARNING" button in the top bar: flies to + shows the most urgent active warning
+    function viewActiveWarning() {
+      const feature = latestTornadoFeature || cachedAlertsFeatures[0];
+      if (!feature) {
+        openFullHUDDetails();
+        return;
+      }
+      openAlertDetail(feature);
+    }
+
+    function activateSynapseOverdrive() {
+      isSynapseOverdrive = !isSynapseOverdrive;
+      const hudBox = document.getElementById('radar-hud-box');
+      playSynapseBeep();
+
+      if (isSynapseOverdrive) {
+        hudBox.classList.add('synapse-overdrive');
+        speakAlert("Synapse Overdrive engaged. Tactical HUD locked to maximum performance.");
+        logMessage("⚡ SYNAPSE OVERDRIVE ACTIVATED.");
+      } else {
+        hudBox.classList.remove('synapse-overdrive');
+        logMessage("⚡ SYNAPSE OVERDRIVE DEACTIVATED.");
+      }
+    }
+
+    async function fetchLiveNWSAlerts() {
+      try {
+        let torCount = 0, svrCount = 0, ffwCount = 0, ticker = [];
+        let firstTornadoFeature = null, firstFFWFeature = null;
+        // severity=Severe,Extreme also covers Flash Flood Warnings (NWS
+        // issues those at Severe+ severity), so no separate fetch needed --
+        // we just need to also COUNT and SURFACE them, which the old code
+        // wasn't doing.
+        const response = await fetch('https://api.weather.gov/alerts/active?status=actual&severity=Severe,Extreme', {
+          headers: { 'User-Agent': '(SynapseWeatherCommand, contact@example.com)' }
+        });
+        if (!response.ok) throw new Error(`NWS API returned HTTP ${response.status}`);
+        const geoJsonData = await response.json();
+        cachedAlertsFeatures = geoJsonData.features || [];
+
+        cachedAlertsFeatures.forEach(alert => {
+          const evt = (alert.properties && alert.properties.event) || '';
+          const headline = (alert.properties && (alert.properties.headline || alert.properties.event)) || 'Alert';
+          const evtLower = evt.toLowerCase();
+          if (evtLower.includes('tornado')) {
+            torCount++;
+            if (!firstTornadoFeature) firstTornadoFeature = alert;
+          }
+          if (evtLower.includes('flash flood')) {
+            ffwCount++;
+            if (!firstFFWFeature) firstFFWFeature = alert;
+          }
+          if (evtLower.includes('thunderstorm')) svrCount++;
+          ticker.push(`🚨 ${headline.toUpperCase()}`);
+        });
+
+        latestTornadoFeature = firstTornadoFeature;
+        latestFFWFeature = firstFFWFeature;
+        updateThreatIndex(torCount, svrCount, ffwCount);
+        renderWarningsList();
+
+        // --- Update every visible counter FIRST, before anything riskier
+        //     (like rendering the map layer) runs. This guarantees the
+        //     tornado/severe counts always show up even if something later
+        //     in this function has trouble with a malformed alert. ---
+        document.getElementById('hud-val-tor').innerText = torCount;
+        document.getElementById('hud-val-svr').innerText = svrCount;
+        document.getElementById('hud-val-ffw').innerText = ffwCount;
+        document.getElementById('hud-alert-count').innerText = torCount + svrCount + ffwCount;
+
+        // Priority for the top bar: Tornado > Flash Flood > Severe T-storm > other
+        if (torCount > 0) {
+          document.getElementById('top-alert-bar').classList.add('tornado-active');
+          document.getElementById('alert-title').innerText = `🌪️ ${torCount} TORNADO WARNING${torCount > 1 ? 'S' : ''} ACTIVE`;
+          document.getElementById('alert-counties').innerText = firstTornadoFeature
+            ? (firstTornadoFeature.properties.areaDesc || '').toUpperCase()
+            : `+ ${svrCount} SEVERE THUNDERSTORM WARNING${svrCount === 1 ? '' : 'S'}`;
+        } else if (ffwCount > 0) {
+          document.getElementById('top-alert-bar').classList.add('tornado-active');
+          document.getElementById('alert-title').innerText = `🌊 ${ffwCount} FLASH FLOOD WARNING${ffwCount > 1 ? 'S' : ''} ACTIVE`;
+          document.getElementById('alert-counties').innerText = firstFFWFeature
+            ? (firstFFWFeature.properties.areaDesc || '').toUpperCase()
+            : '';
+        } else {
+          document.getElementById('top-alert-bar').classList.remove('tornado-active');
+          if (cachedAlertsFeatures.length > 0) {
+            document.getElementById('alert-title').innerText = svrCount > 0
+              ? `⚠️ ${svrCount} SEVERE THUNDERSTORM WARNING${svrCount > 1 ? 'S' : ''} ACTIVE`
+              : `${cachedAlertsFeatures.length} ACTIVE ALERT${cachedAlertsFeatures.length > 1 ? 'S' : ''}`;
+            document.getElementById('alert-counties').innerText = (cachedAlertsFeatures[0].properties.areaDesc || '').toUpperCase();
+          } else {
+            document.getElementById('alert-title').innerText = 'SYNAPSE SECURE LINK ACTIVE';
+            document.getElementById('alert-counties').innerText = '[CLICK TO TOGGLE SYNAPSE OVERDRIVE HUD]';
+          }
+        }
+        document.getElementById('ticker-marquee').innerText = ticker.length ? ticker.join('   •   ') : "🟢 ALL SYSTEMS SECURE. NO ACTIVE SEVERE WARNINGS.";
+
+        if (torCount > previousTornadoCount) {
+          playAlertSiren();
+          speakAlert("Warning: Tornado warning detected in grid.");
+          logMessage(`🚨 TORNADO WARNING DETECTED: ${torCount} active.`);
+          if (!isSynapseOverdrive) activateSynapseOverdrive();
+          const areaName = firstTornadoFeature ? firstTornadoFeature.properties.areaDesc : 'the grid';
+          updateCompanion('alert', `Tornado warning detected. Moving the map to ${areaName} now.`);
+          // Fly the map to where the new tornado warning actually is
+          if (firstTornadoFeature) flyToFeature(firstTornadoFeature);
+        } else if (torCount > 0) {
+          updateCompanion('alert', pickPhrase('tornadoOngoing', { torCount, areaName: firstTornadoFeature ? firstTornadoFeature.properties.areaDesc : 'the grid' }));
+        } else if (ffwCount > previousFFWCount) {
+          playWarningTone();
+          logMessage(`🌊 FLASH FLOOD WARNING DETECTED: ${ffwCount} active.`);
+          const areaName = firstFFWFeature ? firstFFWFeature.properties.areaDesc : 'the grid';
+          updateCompanion('alert', `Flash flood warning issued for ${areaName}. Avoid low-lying roads in that area.`);
+          if (firstFFWFeature) flyToFeature(firstFFWFeature);
+        } else if (ffwCount > 0) {
+          updateCompanion('alert', pickPhrase('ffwOngoing', { ffwCount }));
+        } else if (svrCount > 0) {
+          updateCompanion('scanning', pickPhrase('svrOngoing', { svrCount }));
+        } else {
+          updateCompanion('idle', pickPhrase('allClear', {}));
+        }
+        previousTornadoCount = torCount;
+        previousFFWCount = ffwCount;
+
+        // Map polygon rendering happens LAST and is wrapped separately so a
+        // single malformed alert geometry can't wipe out the stats above.
+        try {
+          if (alertLayer1) map1.removeLayer(alertLayer1);
+          alertLayer1 = L.geoJSON(geoJsonData, {
+            style: (f) => {
+              const evt = ((f.properties && f.properties.event) || '').toLowerCase();
+              let color = '#FFA500';
+              if (evt.includes('tornado')) color = '#FF0000';
+              else if (evt.includes('flash flood')) color = '#3B82F6';
+              return { color, weight: 3, fillOpacity: 0.4 };
+            },
+            onEachFeature: (feature, layer) => {
+              const p = feature.properties || {};
+              layer.bindTooltip(`🚨 ${p.event || 'Alert'} — ${p.areaDesc || ''}`, { sticky: true });
+              layer.on('click', () => openAlertDetail(feature));
+              layer.on('mouseover', () => layer.setStyle({ weight: 5 }));
+              layer.on('mouseout', () => layer.setStyle({ weight: 3 }));
+            }
+          }).addTo(map1);
+        } catch (mapErr) {
+          logMessage(`⚠️ Warning polygons failed to render (counts above are still accurate): ${mapErr.message}`);
+        }
+        renderTornadoLogos();
+        if (lightningVisible) {
+          renderLightningStrikes();
+        }
+        if (lightningVisible && (svrCount > 0 || torCount > 0)) {
+          setTimeout(() => playThunderRumble(), 600 + Math.random() * 2000);
+        }
+        if (svrCount > 0 && Math.random() < 0.15) {
+          setTimeout(() => playWindHowl(), 1200 + Math.random() * 3000);
+        }
+      } catch (e) {
+        logMessage(`❌ Error updating NWS feeds: ${e.message}`);
+      }
+    }
+
+    function toggleDualView() {
+      isDual = !isDual;
+      document.getElementById('map2').style.display = isDual ? 'block' : 'none';
+      document.getElementById('dual-view-btn').textContent = isDual ? 'SINGLE VIEW' : 'SPLIT VIEW';
+      if (isDual) { map2.setView(map1.getCenter(), map1.getZoom()); loadRadarLayer(map2); }
+      setTimeout(() => { map1.invalidateSize(); map2.invalidateSize(); }, 200);
+    }
+  </script>
+</body>
+</html>
