@@ -1183,52 +1183,43 @@ const SPC_RISK_LEVELS = {"TSTM": 1, "MRGL": 2, "SLGT": 3, "ENH": 4, "MDT": 5, "H
       }
       _lastTornadoReportFetch = now;
       logMessage("🌪️ FETCHING CONFIRMED TORNADO REPORTS FROM SPC...");
-      const reports = [];
-      const proxies = [
-        'https://corsproxy.io/?',
-        'https://api.allorigins.win/raw?url=',
-        'https://api.codetabs.com/v1/proxy?quest=',
-      ];
-      let proxySuccess = false;
-      for (const proxy of proxies) {
-        try {
-          const proxyUrl = proxy + encodeURIComponent('https://www.spc.noaa.gov/climo/reports/today_torn.csv');
-          const res = await fetch(proxyUrl, { headers: { "Accept": "text/csv" }, signal: AbortSignal.timeout(8000) });
-          if (!res.ok) continue;
-          const text = await res.text();
-          if (text.trim().startsWith('<')) continue; // HTML error page
-          const lines = text.trim().split('\n');
-          if (lines.length < 2) continue;
-          for (let i = 1; i < lines.length; i++) {
-            const parts = lines[i].split(',');
-            if (parts.length < 7) continue;
-            try {
-              const lat = parseFloat(parts[5]);
-              const lon = parseFloat(parts[6]);
-              if (isNaN(lat) || isNaN(lon)) continue;
-              reports.push({ time: parts[0], f_scale: parts[1], location: parts[2], county: parts[3], state: parts[4], lat, lon, comments: parts[7] || "" });
-            } catch (e) {}
-          }
-          proxySuccess = true;
-          logMessage(`🌪️ SPC via ${proxy.split('/')[2]}: ${reports.length} confirmed tornadoes.`);
-          break;
-        } catch (e) {
-          console.log(`Proxy ${proxy.split('/')[2]} failed:`, e.message);
+      try {
+        // Use NOAA ArcGIS REST API for tornado reports (supports CORS, returns JSON)
+        const arcUrl = 'https://services9.arcgis.com/RHVPKKiFTONKtxq3/ArcGIS/rest/services/NOAA_storm_reports_v1/FeatureServer/1/query?where=1%3D1&outFields=*&outSR=4326&f=json';
+        const res = await fetch(arcUrl, { headers: { "Accept": "application/json" } });
+        const data = await res.json();
+        const reports = [];
+        if (data.features && data.features.length > 0) {
+          data.features.forEach(f => {
+            const a = f.attributes || {};
+            if (a.LATITUDE && a.LONGITUDE) {
+              reports.push({
+                time: a.UTC_DATETIME || a.DATE || '',
+                f_scale: a.F_SCALE || a.TOR_F_SCALE || '?',
+                location: a.LOCATION || '',
+                county: a.COUNTY || '',
+                state: a.STATE || '',
+                lat: a.LATITUDE,
+                lon: a.LONGITUDE,
+                comments: a.COMMENTS || '',
+              });
+            }
+          });
         }
-      }
-      confirmedTornadoReports = reports;
-      updateConfirmedTornadoHUD(reports.length);
-      if (tornadoLogoVisible) renderConfirmedTornadoes();
-      if (reports.length > 0) {
-        playAlertSiren();
-        speakAlert(`${reports.length} confirmed tornado${reports.length===1?'':'es'} reported today.`);
-        updateCompanion('scanning', `SPC shows ${reports.length} confirmed tornado reports today.`);
-      } else if (!proxySuccess) {
-        logMessage("🌪️ All SPC proxies failed. Confirmed tornado data unavailable.");
-        updateCompanion('idle', 'SPC tornado report proxies are down. NWS alerts still active.');
-      } else {
-        logMessage(`🌪️ SPC CONFIRMED TORNADOES: 0 reported today.`);
-        updateCompanion('idle', 'No confirmed tornadoes today. Grid is clear.');
+        confirmedTornadoReports = reports;
+        updateConfirmedTornadoHUD(reports.length);
+        if (tornadoLogoVisible) renderConfirmedTornadoes();
+        logMessage(`🌪️ SPC CONFIRMED TORNADOES: ${reports.length} reported today.`);
+        if (reports.length > 0) {
+          playAlertSiren();
+          speakAlert(`${reports.length} confirmed tornado${reports.length===1?'':'es'} reported today.`);
+          updateCompanion('scanning', `SPC shows ${reports.length} confirmed tornado reports today.`);
+        } else {
+          updateCompanion('idle', 'No confirmed tornadoes today. Grid is clear.');
+        }
+      } catch (e) {
+        logMessage(`🌪️ SPC ArcGIS fetch error: ${e.message}`);
+        updateCompanion('idle', 'SPC tornado data temporarily unavailable. NWS alerts still active.');
       }
     }
 
