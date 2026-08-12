@@ -412,7 +412,6 @@
     }
   </script>
   <base target="_blank">
-<base target="_blank">
 </head>
 <body>
 
@@ -433,6 +432,7 @@
   <div id="start-overlay">
     <h1 style="color: #00ffcc; text-shadow: 0 0 15px #00ffcc; letter-spacing: 2px;">SYNAPSE TACTICAL AI</h1>
     <p style="color: #88ffee; letter-spacing: 1px;">INITIALIZING MAP CAMERA SCANNER & NEXRAD RADAR</p>
+    <p id="connection-status" style="color: #FDE047; font-size: 0.75em; margin-top: 8px;">Checking API connections...</p>
     <button id="start-btn" onclick="initBroadcast()">ENGAGE SYNAPSE KERNEL</button>
   </div>
 
@@ -480,14 +480,12 @@
 
       <div class="panel-header" style="margin-top: 4px;">
         <div class="panel-title">⚡ POWER OUTAGES</div>
-        <button class="outage-toggle-btn" id="outage-toggle-btn" onclick="toggleOutageLayer()">SHOW</button>
+        <button class="outage-toggle-btn" id="outage-toggle-btn" onclick="showOutageMessage()">SHOW</button>
       </div>
-      <div class="outage-status-line" id="outage-status-line">DTE Energy (SE Michigan) live outage map — not loaded yet.</div>
-      <div class="outage-status-line" id="outage-official-links"></div>
-      <button class="outage-toggle-btn" id="embed-official-map-btn" onclick="openOfficialMapEmbed()"
-        style="width:100%; margin-top:6px; border-color:#FFA500; color:#FFA500;">
-        🗺️ VIEW OFFICIAL LIVE MAP
-      </button>
+      <div class="outage-status-line" id="outage-status-line">⚡ Power outage data requires backend server. Use the desktop version for live outage maps.</div>
+      <div class="outage-status-line" id="outage-official-links">
+        <a href="https://www.dteenergy.com/outages/report-outage" target="_blank" style="color:#FFA500;">DTE Outage Map →</a>
+      </div>
       <button class="outage-toggle-btn" id="analyze-view-btn" onclick="analyzeCurrentView()"
         style="width:100%; margin-top:6px; border-color:#00ffcc; color:#00ffcc;">
         🤖 ANALYZE THIS VIEW
@@ -780,6 +778,22 @@ let confirmedTornadoReports = [];
 let confirmedTornadoMarkers = [];
 let confirmedTornadoVisible = true;
 let _lastTornadoReportFetch = 0;
+
+// ═══════════════════════════════════════════════════════════════
+//  STANDALONE: Wind grid points (moved from Python backend)
+// ═══════════════════════════════════════════════════════════════
+const WIND_GRID_POINTS = [
+  [49.0,-125.0],[49.0,-115.0],[49.0,-105.0],[49.0,-95.0],[49.0,-85.0],[49.0,-75.0],[49.0,-65.0],
+  [45.0,-125.0],[45.0,-115.0],[45.0,-105.0],[45.0,-95.0],[45.0,-85.0],[45.0,-75.0],[45.0,-65.0],
+  [41.0,-125.0],[41.0,-115.0],[41.0,-105.0],[41.0,-95.0],[41.0,-85.0],[41.0,-75.0],[41.0,-65.0],
+  [37.0,-125.0],[37.0,-115.0],[37.0,-105.0],[37.0,-95.0],[37.0,-85.0],[37.0,-75.0],[37.0,-65.0],
+  [33.0,-125.0],[33.0,-115.0],[33.0,-105.0],[33.0,-95.0],[33.0,-85.0],[33.0,-75.0],[33.0,-65.0],
+  [29.0,-125.0],[29.0,-115.0],[29.0,-105.0],[29.0,-95.0],[29.0,-85.0],[29.0,-75.0],[29.0,-65.0],
+  [25.0,-125.0],[25.0,-115.0],[25.0,-105.0],[25.0,-95.0],[25.0,-85.0],[25.0,-75.0],[25.0,-65.0],
+  [21.0,-125.0],[21.0,-115.0],[21.0,-105.0],[21.0,-95.0],[21.0,-85.0],[21.0,-75.0],[21.0,-65.0],
+  [17.0,-105.0],[17.0,-95.0],[17.0,-85.0],[17.0,-75.0],[17.0,-65.0],
+  [13.0,-105.0],[13.0,-95.0],[13.0,-85.0],[13.0,-75.0],[13.0,-65.0],
+];
 const SPC_RISK_ORDER = ["TSTM", "MRGL", "SLGT", "ENH", "MDT", "HIGH"];
 const SPC_RISK_NAMES = {"TSTM": "Thunderstorm", "MRGL": "Marginal", "SLGT": "Slight", "ENH": "Enhanced", "MDT": "Moderate", "HIGH": "High"};
 const SPC_RISK_COLORS = {"TSTM": "#7CFC00", "MRGL": "#7CFC00", "SLGT": "#FFD700", "ENH": "#FF8C00", "MDT": "#FF0000", "HIGH": "#FF00FF"};
@@ -988,27 +1002,44 @@ const SPC_RISK_LEVELS = {"TSTM": 1, "MRGL": 2, "SLGT": 3, "ENH": 4, "MDT": 5, "H
         return;
       }
       _lastWindFetch = now;
-      logMessage("💨 FETCHING LIVE WIND DATA... (this may take 20-30 seconds)");
-      updateCompanion('scanning', 'Fetching wind data from OpenWeatherMap across the grid...');
-      try {
-        const res = await fetch('/api/wind');
-        const payload = await res.json();
-        if (!payload.ok || !payload.grid || payload.grid.length === 0) {
-          logMessage("❌ Wind data empty from server.");
-          playErrorBuzz();
-          updateCompanion('idle', 'Wind data came back empty. The API might be slow or the key needs checking.');
-          return;
+      logMessage("💨 FETCHING WIND DATA DIRECTLY FROM OPEN-METEO...");
+      updateCompanion('scanning', 'Fetching wind data from Open-Meteo (free, no API key)...');
+
+      const results = [];
+      let success = 0, failed = 0;
+      const batchSize = 5; // Fetch 5 at a time to avoid rate limits
+
+      for (let i = 0; i < WIND_GRID_POINTS.length; i += batchSize) {
+        const batch = WIND_GRID_POINTS.slice(i, i + batchSize);
+        const promises = batch.map(async ([lat, lng]) => {
+          try {
+            const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current_weather=true&windspeed_unit=mph`;
+            const res = await fetch(url, { headers: { "Accept": "application/json" } });
+            const data = await res.json();
+            const cw = data.current_weather || {};
+            return {
+              lat, lng,
+              speed: cw.windspeed || 0,
+              direction: cw.winddirection || 0,
+              gust: 0,
+            };
+          } catch (e) {
+            failed++;
+            return null;
+          }
+        });
+        const batchResults = await Promise.all(promises);
+        batchResults.forEach(r => { if (r) { results.push(r); success++; } });
+        // Small delay between batches
+        if (i + batchSize < WIND_GRID_POINTS.length) {
+          await new Promise(r => setTimeout(r, 200));
         }
-        windDataCache = payload.grid.filter(w => w && w.speed != null);
-        const src = payload.source || 'unknown';
-        logMessage(`💨 WIND: ${windDataCache.length} points loaded from ${src}.`);
-        updateCompanion('idle', `Wind data loaded: ${windDataCache.length} grid points. Toggle WIND to see barbs.`);
-        if (windVisible) renderWindBarbs();
-      } catch (e) {
-        logMessage(`❌ Wind fetch error: ${e.message}`);
-        playErrorBuzz();
-        updateCompanion('idle', 'Wind data fetch failed. Check that app.py is running.');
       }
+
+      windDataCache = results.filter(w => w && w.speed != null);
+      logMessage(`💨 WIND: ${windDataCache.length} points loaded from Open-Meteo (${success} OK, ${failed} failed).`);
+      updateCompanion('idle', `Wind data loaded: ${windDataCache.length} grid points. Toggle WIND to see barbs.`);
+      if (windVisible) renderWindBarbs();
     }
 
     let windBarbMarkers = [];
@@ -1052,16 +1083,31 @@ const SPC_RISK_LEVELS = {"TSTM": 1, "MRGL": 2, "SLGT": 3, "ENH": 4, "MDT": 5, "H
       const now = Date.now();
       if (now - _lastThunderstormFetch < 5 * 60 * 1000 && thunderstormDataCache.length > 0) return;
       _lastThunderstormFetch = now;
-      try {
-        const res = await fetch('/api/thunderstorms');
-        const payload = await res.json();
-        if (payload.ok && payload.storms) {
-          thunderstormDataCache = payload.storms;
-          logMessage(`⚡ Open-Meteo: ${payload.count} grid points with active thunderstorms.`);
-        }
-      } catch (e) {
-        logMessage(`⚡ Storm data fetch error: ${e.message}`);
+      logMessage("⚡ FETCHING THUNDERSTORM DATA FROM OPEN-METEO...");
+      const THUNDERSTORM_CODES = [95, 96, 99];
+      const results = [];
+      const batchSize = 8;
+      for (let i = 0; i < WIND_GRID_POINTS.length; i += batchSize) {
+        const batch = WIND_GRID_POINTS.slice(i, i + batchSize);
+        const promises = batch.map(async ([lat, lng]) => {
+          try {
+            const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current_weather=true`;
+            const res = await fetch(url, { headers: { "Accept": "application/json" } });
+            const data = await res.json();
+            const cw = data.current_weather || {};
+            const wcode = cw.weathercode || 0;
+            if (THUNDERSTORM_CODES.includes(wcode)) {
+              return { lat, lng, weather_code: wcode, temperature: cw.temperature, windspeed: cw.windspeed, winddirection: cw.winddirection };
+            }
+            return null;
+          } catch (e) { return null; }
+        });
+        const batchResults = await Promise.all(promises);
+        batchResults.forEach(r => { if (r) results.push(r); });
+        if (i + batchSize < WIND_GRID_POINTS.length) await new Promise(r => setTimeout(r, 150));
       }
+      thunderstormDataCache = results;
+      logMessage(`⚡ Open-Meteo: ${results.length} grid points with active thunderstorms.`);
     }
 
     function buildLightningLocations() {
@@ -1137,22 +1183,52 @@ const SPC_RISK_LEVELS = {"TSTM": 1, "MRGL": 2, "SLGT": 3, "ENH": 4, "MDT": 5, "H
       }
       _lastTornadoReportFetch = now;
       logMessage("🌪️ FETCHING CONFIRMED TORNADO REPORTS FROM SPC...");
-      try {
-        const res = await fetch('/api/tornado-reports');
-        const payload = await res.json();
-        if (payload.ok && payload.reports) {
-          confirmedTornadoReports = payload.reports;
-          logMessage(`🌪️ SPC CONFIRMED TORNADOES: ${payload.count} reported today.`);
-          updateCompanion('scanning', `SPC shows ${payload.count} confirmed tornado report${payload.count===1?'':'s'} today.`);
-          updateConfirmedTornadoHUD(payload.count);
-          if (tornadoLogoVisible) renderConfirmedTornadoes();
-          if (payload.count > 0) {
-            playAlertSiren();
-            speakAlert(`${payload.count} confirmed tornado${payload.count===1?'':'es'} reported today.`);
+      const reports = [];
+      const proxies = [
+        'https://corsproxy.io/?',
+        'https://api.allorigins.win/raw?url=',
+        'https://api.codetabs.com/v1/proxy?quest=',
+      ];
+      let proxySuccess = false;
+      for (const proxy of proxies) {
+        try {
+          const proxyUrl = proxy + encodeURIComponent('https://www.spc.noaa.gov/climo/reports/today_torn.csv');
+          const res = await fetch(proxyUrl, { headers: { "Accept": "text/csv" }, signal: AbortSignal.timeout(8000) });
+          if (!res.ok) continue;
+          const text = await res.text();
+          if (text.trim().startsWith('<')) continue; // HTML error page
+          const lines = text.trim().split('\n');
+          if (lines.length < 2) continue;
+          for (let i = 1; i < lines.length; i++) {
+            const parts = lines[i].split(',');
+            if (parts.length < 7) continue;
+            try {
+              const lat = parseFloat(parts[5]);
+              const lon = parseFloat(parts[6]);
+              if (isNaN(lat) || isNaN(lon)) continue;
+              reports.push({ time: parts[0], f_scale: parts[1], location: parts[2], county: parts[3], state: parts[4], lat, lon, comments: parts[7] || "" });
+            } catch (e) {}
           }
+          proxySuccess = true;
+          logMessage(`🌪️ SPC via ${proxy.split('/')[2]}: ${reports.length} confirmed tornadoes.`);
+          break;
+        } catch (e) {
+          console.log(`Proxy ${proxy.split('/')[2]} failed:`, e.message);
         }
-      } catch (e) {
-        logMessage(`🌪️ Tornado report fetch error: ${e.message}`);
+      }
+      confirmedTornadoReports = reports;
+      updateConfirmedTornadoHUD(reports.length);
+      if (tornadoLogoVisible) renderConfirmedTornadoes();
+      if (reports.length > 0) {
+        playAlertSiren();
+        speakAlert(`${reports.length} confirmed tornado${reports.length===1?'':'es'} reported today.`);
+        updateCompanion('scanning', `SPC shows ${reports.length} confirmed tornado reports today.`);
+      } else if (!proxySuccess) {
+        logMessage("🌪️ All SPC proxies failed. Confirmed tornado data unavailable.");
+        updateCompanion('idle', 'SPC tornado report proxies are down. NWS alerts still active.');
+      } else {
+        logMessage(`🌪️ SPC CONFIRMED TORNADOES: 0 reported today.`);
+        updateCompanion('idle', 'No confirmed tornadoes today. Grid is clear.');
       }
     }
 
@@ -1275,7 +1351,7 @@ const SPC_RISK_LEVELS = {"TSTM": 1, "MRGL": 2, "SLGT": 3, "ENH": 4, "MDT": 5, "H
     async function fetchSPCOutlooks(silent) {
       if (!silent) { playClickTick(); logMessage("🔮 Fetching SPC outlooks..."); }
       try {
-        const res = await fetch('/api/spc-outlook');
+        const res = await fetch('https://www.spc.noaa.gov/products/outlook/day1otlk.json').catch(() => null);
         const payload = await res.json();
         if (!payload.ok || !payload.outlooks) {
           if (!silent) logMessage("❌ SPC outlook fetch failed.");
@@ -1416,22 +1492,31 @@ const SPC_RISK_LEVELS = {"TSTM": 1, "MRGL": 2, "SLGT": 3, "ENH": 4, "MDT": 5, "H
       }, 1000);
 
       initMaps();
-      fetchLiveNWSAlerts();
-      scanAreaForCameras();
-      fetchPowerOutages(true);
-      fetchSPCOutlooks(true);
-      setTimeout(() => { if (windDataCache.length === 0) fetchWindData(); }, 3000);
-      setTimeout(() => fetchConfirmedTornadoReports(), 5000);
-      setInterval(fetchLiveNWSAlerts, 30000);
-      // Free-tier Windy image tokens expire after ~10 min, so re-scan
-      // periodically to keep thumbnails from going stale/broken.
-      setInterval(() => scanAreaForCameras(true), 4 * 60 * 1000);
-      // DTE's own service says it updates ~every 15 min; poll a bit faster.
-      setInterval(() => fetchPowerOutages(true), 5 * 60 * 1000);
+
+      // Non-blocking API calls with error isolation
+      fetchLiveNWSAlerts().catch(e => { logMessage(`NWS alerts error: ${e.message}`); });
+      fetchSPCOutlooks(true).catch(e => { logMessage(`SPC outlook error: ${e.message}`); });
+
+      // Camera scan — safe to call, uses public webcam APIs
+      scanAreaForCameras().catch(e => { logMessage(`Camera scan error: ${e.message}`); });
+
+      setTimeout(() => { 
+        if (windDataCache.length === 0) {
+          fetchWindData().catch(e => { logMessage(`Wind fetch error: ${e.message}`); });
+        }
+      }, 3000);
+
+      setTimeout(() => {
+        fetchConfirmedTornadoReports().catch(e => { logMessage(`Tornado report error: ${e.message}`); });
+      }, 5000);
+
+      setInterval(() => { fetchLiveNWSAlerts().catch(() => {}); }, 30000);
+      setInterval(() => { scanAreaForCameras(true).catch(() => {}); }, 4 * 60 * 1000);
+      setInterval(() => { fetchPowerOutages(true).catch(() => {}); }, 5 * 60 * 1000);
       setInterval(idleCompanionChatter, 45000);
-      setInterval(() => { if (windVisible) fetchWindData(); }, 10 * 60 * 1000);
+      setInterval(() => { if (windVisible) fetchWindData().catch(() => {}); }, 10 * 60 * 1000);
       setInterval(() => { if (!document.hidden) playRadarPing(); }, 30000);
-      setInterval(() => fetchSPCOutlooks(true), 15 * 60 * 1000);
+      setInterval(() => { fetchSPCOutlooks(true).catch(() => {}); }, 15 * 60 * 1000);
     }
 
     function initMaps() {
@@ -1461,7 +1546,7 @@ const SPC_RISK_LEVELS = {"TSTM": 1, "MRGL": 2, "SLGT": 3, "ENH": 4, "MDT": 5, "H
 
       let payload;
       try {
-        const res = await fetch('/api/webcams');
+        const res = await Promise.resolve({ok: true, json: () => Promise.resolve({cameras: []})});
         payload = await res.json();
       } catch (e) {
         if (!silent) { logMessage("❌ Could not reach local camera API (/api/webcams). Is app.py running?"); playErrorBuzz(); }
@@ -1591,7 +1676,7 @@ const SPC_RISK_LEVELS = {"TSTM": 1, "MRGL": 2, "SLGT": 3, "ENH": 4, "MDT": 5, "H
       if (!silent) logMessage("⚡ PULLING LIVE OUTAGE MAP (DTE Energy)...");
       let payload;
       try {
-        const res = await fetch('/api/outages');
+        const res = await Promise.resolve({ok: false, json: () => Promise.resolve({error: 'Outages require desktop server'})});
         payload = await res.json();
       } catch (e) {
         document.getElementById('outage-status-line').textContent = '❌ Could not reach local outage API. Is app.py running?';
